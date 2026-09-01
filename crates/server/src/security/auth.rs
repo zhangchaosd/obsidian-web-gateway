@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -19,6 +19,7 @@ use crate::error::{AppError, AppResult};
 
 const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const LOGIN_COOLDOWN: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct AuthStore {
@@ -32,6 +33,8 @@ pub struct AuthStore {
 struct AuthInner {
     sessions: HashMap<String, Session>,
     failures: HashMap<String, Vec<Instant>>,
+    next_attempt: HashMap<String, Instant>,
+    active_attempts: HashSet<String>,
 }
 
 struct Session {
@@ -83,6 +86,12 @@ impl AuthStore {
                 csrf: String::new(),
             });
         }
+        let hash = self
+            .password_hash
+            .as_deref()
+            .ok_or(AppError::Unauthenticated)?;
+        let parsed = PasswordHash::new(hash)
+            .map_err(|_| AppError::Internal("invalid password hash".into()))?;
         let now = Instant::now();
         {
             let mut inner = self
@@ -94,43 +103,56 @@ impl AuthStore {
             if failures.len() >= 5 {
                 return Err(AppError::Forbidden);
             }
+            if let Some(retry_at) = inner.next_attempt.get(client).copied() {
+                if retry_at > now {
+                    return Err(rate_limited(retry_at.duration_since(now)));
+                }
+                inner.next_attempt.remove(client);
+            }
+            if !inner.active_attempts.insert(client.to_owned()) {
+                return Err(rate_limited(LOGIN_COOLDOWN));
+            }
         }
 
-        let hash = self
-            .password_hash
-            .as_deref()
-            .ok_or(AppError::Unauthenticated)?;
-        let parsed = PasswordHash::new(hash)
-            .map_err(|_| AppError::Internal("invalid password hash".into()))?;
         if Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
             .is_err()
         {
+            let failed_at = Instant::now();
             let mut inner = self
                 .inner
                 .lock()
                 .map_err(|_| AppError::Internal("auth lock poisoned".into()))?;
+            inner.active_attempts.remove(client);
             inner
                 .failures
                 .entry(client.to_owned())
                 .or_default()
-                .push(now);
+                .push(failed_at);
+            inner
+                .next_attempt
+                .insert(client.to_owned(), failed_at + LOGIN_COOLDOWN);
             return Err(AppError::Unauthenticated);
         }
 
+        let authenticated_at = Instant::now();
         let session = random_token();
         let csrf = random_token();
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| AppError::Internal("auth lock poisoned".into()))?;
+        inner.active_attempts.remove(client);
         inner.failures.remove(client);
-        inner.sessions.retain(|_, value| value.expires > now);
+        inner.next_attempt.remove(client);
+        inner
+            .sessions
+            .retain(|_, value| value.expires > authenticated_at);
         inner.sessions.insert(
             session.clone(),
             Session {
                 csrf: csrf.clone(),
-                expires: now + SESSION_TTL,
+                expires: authenticated_at + SESSION_TTL,
             },
         );
         let secure = if self.secure_cookie { "; Secure" } else { "" };
@@ -195,6 +217,12 @@ impl AuthStore {
     }
 }
 
+fn rate_limited(retry_after: Duration) -> AppError {
+    AppError::RateLimited {
+        retry_after_seconds: retry_after.as_secs().max(1),
+    }
+}
+
 pub async fn require_auth(
     axum::extract::State(auth): axum::extract::State<AuthStore>,
     request: Request<Body>,
@@ -235,11 +263,17 @@ fn random_token() -> String {
 mod tests {
     use super::*;
     use http::HeaderValue;
+    use std::sync::Barrier;
 
     #[test]
     fn session_requires_csrf_for_mutations() {
         let auth = AuthStore::new(true, Some("correct horse battery staple"), false).expect("auth");
         assert!(auth.login("wrong", "client").is_err());
+        assert!(matches!(
+            auth.login("correct horse battery staple", "client"),
+            Err(AppError::RateLimited { .. })
+        ));
+        std::thread::sleep(LOGIN_COOLDOWN);
         let login = auth
             .login("correct horse battery staple", "client")
             .expect("login");
@@ -256,5 +290,40 @@ mod tests {
             HeaderValue::from_str(&login.csrf).expect("csrf"),
         );
         assert!(auth.authorize(&headers, true).is_ok());
+    }
+
+    #[test]
+    fn concurrent_attempts_from_one_client_are_serialized() {
+        let auth = AuthStore::new(true, Some("correct horse battery staple"), false).expect("auth");
+        let barrier = Arc::new(Barrier::new(4));
+        let threads = (0..4)
+            .map(|_| {
+                let auth = auth.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    auth.login("wrong", "same-client")
+                })
+            })
+            .collect::<Vec<_>>();
+        let attempts = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("login thread"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            attempts
+                .iter()
+                .filter(|result| matches!(result, Err(AppError::Unauthenticated)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            attempts
+                .iter()
+                .filter(|result| matches!(result, Err(AppError::RateLimited { .. })))
+                .count(),
+            3
+        );
     }
 }

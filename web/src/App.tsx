@@ -147,7 +147,10 @@ export default function App() {
 
   useEffect(() => {
     const listener = (event: BeforeUnloadEvent) => {
-      if (documentRef.current?.dirty) event.preventDefault();
+      if (documentRef.current?.dirty) {
+        event.preventDefault();
+        event.returnValue = true;
+      }
     };
     window.addEventListener("beforeunload", listener);
     return () => window.removeEventListener("beforeunload", listener);
@@ -320,15 +323,18 @@ export default function App() {
                 <button onClick={() => setShowDiff(false)}>Close comparison</button>
               </div>
             ) : mode === "edit" ? (
-              <CodeMirror
-                value={document.content}
-                height="100%"
-                extensions={[markdown()]}
-                basicSetup={{ lineNumbers }}
-                editable={!system.features.readOnly}
-                onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)}
-                aria-label="Markdown editor"
-              />
+              <div className="editor-pane">
+                <CodeMirror
+                  className="editor-surface"
+                  value={document.content}
+                  height="100%"
+                  extensions={[markdown()]}
+                  basicSetup={{ lineNumbers }}
+                  editable={!system.features.readOnly}
+                  onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)}
+                  aria-label="Markdown editor"
+                />
+              </div>
             ) : (
               <article className="preview" onClick={event => {
                 const target = (event.target as HTMLElement).closest<HTMLElement>("[data-wiki]")?.dataset.wiki;
@@ -362,13 +368,28 @@ function Tree({ entries, onOpen }: { entries: TreeEntry[]; onOpen: (path: string
 function Login({ vault, onSuccess, error }: { vault: string; onSuccess: () => Promise<void>; error: string }) {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState(error);
+  const [submitting, setSubmitting] = useState(false);
+  const [cooldown, setCooldown] = useState(false);
+
+  useEffect(() => {
+    if (!cooldown) return;
+    const timer = window.setTimeout(() => setCooldown(false), 1000);
+    return () => window.clearTimeout(timer);
+  }, [cooldown]);
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (submitting || cooldown) return;
     setMessage("");
+    setSubmitting(true);
     try { await login(password); await onSuccess(); }
-    catch (cause) { clearSession(); setMessage(messageOf(cause)); }
+    catch (cause) {
+      clearSession();
+      setMessage(cause instanceof ApiError && cause.status === 401 ? "Incorrect password." : messageOf(cause));
+      setCooldown(true);
+    } finally { setSubmitting(false); }
   };
-  return <main className="centered"><form className="login-card" onSubmit={submit}><div className="logo">OWG</div><h1>{vault}</h1><p>Sign in to access this Vault.</p><label>Password<input type="password" autoFocus autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></label>{message && <p className="login-error">{message}</p>}<button type="submit">Sign in</button></form></main>;
+  return <main className="centered"><form className="login-card" onSubmit={submit}><div className="logo">OWG</div><h1>{vault}</h1><p>Sign in to access this Vault.</p><label>Password<input type="password" autoFocus autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></label>{message && <p className="login-error">{message}</p>}<button type="submit" disabled={submitting || cooldown}>{submitting ? "Signing in…" : cooldown ? "Try again in 1 second…" : "Sign in"}</button></form></main>;
 }
 
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : "Unexpected error"; }

@@ -7,4 +7,5 @@
 /web/vite.config.d.ts
 /web/test-results/
 /web/playwright-report/
+/tmp/
 .DS_Store

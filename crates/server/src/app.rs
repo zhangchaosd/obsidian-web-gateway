@@ -271,6 +271,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn login_cooldown_returns_retry_after_header() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        fs::write(directory.path().join("A.md"), "one")?;
+        let auth = AuthStore::new(true, Some("a long test password"), false)?;
+        let application = router(state_for_tests(service(directory.path(), false)?, auth)?);
+        let client = ConnectInfo("127.0.0.1:12345".parse::<SocketAddr>()?);
+
+        let mut wrong = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"password":"wrong"}"#))?;
+        wrong.extensions_mut().insert(client);
+        assert_eq!(
+            application.clone().oneshot(wrong).await?.status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let mut retry = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"password":"a long test password"}"#))?;
+        retry.extensions_mut().insert(client);
+        let response = application.oneshot(retry).await?;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response.headers().get(header::RETRY_AFTER),
+            Some(&header::HeaderValue::from_static("1"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn traversal_and_reserved_directories_are_rejected_by_http_api()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;

@@ -23,6 +23,7 @@ button:focus-visible, input:focus-visible, a:focus-visible, summary:focus-visibl
 .top-actions { display: flex; align-items: center; gap: 8px; }
 button { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: inherit; padding: 6px 10px; }
 button:hover { border-color: #aaa3b0; background: #f8f5fb; }
+button:disabled { cursor: not-allowed; opacity: .65; }
 .connection { font-size: 12px; color: var(--muted); }
 .connection.offline { color: var(--danger); }
 .badge { border-radius: 999px; background: #e8def8; color: #4f378b; padding: 3px 8px; font-size: 12px; }
@@ -41,11 +42,14 @@ button:hover { border-color: #aaa3b0; background: #f8f5fb; }
 .search-results button { display: flex; flex-direction: column; text-align: left; }
 .search-results small, .backlink small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace { grid-column: 2; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; }
-.document-toolbar { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.document-toolbar { position: sticky; top: 0; z-index: 3; flex: none; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: 13px; }
 .document-toolbar > span { margin-right: auto; color: var(--muted); }
-.cm-theme { flex: 1; min-height: 0; overflow: auto; }
-.cm-editor { height: 100%; font-size: 15px; }
-.cm-scroller { font-family: "SFMono-Regular", Consolas, monospace !important; line-height: 1.65; }
+.editor-pane { flex: 1 1 0; min-height: 0; overflow: hidden; }
+.editor-pane > .editor-surface { height: 100%; min-height: 0; }
+.editor-pane .cm-editor { height: 100%; min-height: 0; font-size: 15px; }
+.editor-pane .cm-scroller { overflow: auto; scrollbar-gutter: stable; scrollbar-color: #aaa3b0 transparent; scrollbar-width: thin; font-family: "SFMono-Regular", Consolas, monospace !important; line-height: 1.65; }
+.editor-pane .cm-scroller::-webkit-scrollbar { width: 10px; height: 10px; }
+.editor-pane .cm-scroller::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #aaa3b0; background-clip: padding-box; }
 .preview { flex: 1; overflow: auto; padding: 34px clamp(22px, 7vw, 90px); line-height: 1.7; }
 .preview > * { max-width: 860px; margin-left: auto; margin-right: auto; }
 .preview img { max-width: 100%; height: auto; display: block; }

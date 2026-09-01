@@ -28,6 +28,11 @@ describe("Markdown preview", () => {
     expect(html).toContain("checked");
   });
 
+  it("renders a single newline as a line break like Obsidian", () => {
+    const html = renderMarkdown("first line\nsecond line", "A.md");
+    expect(html).toContain("first line<br>\nsecond line");
+  });
+
   it("does not render YAML frontmatter as document headings", () => {
     const html = renderMarkdown("---\ntitle: Hidden metadata\n---\n# Visible", "A.md");
     expect(html).not.toContain("Hidden metadata");

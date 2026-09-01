@@ -43,7 +43,7 @@ function splitAlias(value: string): [string, string | undefined] {
 }
 
 export function renderMarkdown(markdown: string, sourcePath: string): string {
-  const md = new MarkdownIt({ html: false, linkify: true, typographer: false });
+  const md = new MarkdownIt({ html: false, linkify: true, typographer: false, breaks: true });
   md.use(taskLists, { enabled: false, label: true });
   wikiPlugin(md);
   const defaultImage = md.renderer.rules.image;
