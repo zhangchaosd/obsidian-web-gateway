@@ -1,0 +1,10 @@
+/target/
+/web/node_modules/
+/web/dist/
+*.log
+*.tsbuildinfo
+/web/vite.config.js
+/web/vite.config.d.ts
+/web/test-results/
+/web/playwright-report/
+.DS_Store

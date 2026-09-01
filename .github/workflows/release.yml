@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Package ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: target/x86_64-unknown-linux-gnu/release/obsidian-web
+            extension: tar.gz
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary: target/aarch64-unknown-linux-gnu/release/obsidian-web
+            extension: tar.gz
+          - name: macos-aarch64
+            os: macos-15
+            target: aarch64-apple-darwin
+            binary: target/aarch64-apple-darwin/release/obsidian-web
+            extension: tar.gz
+          - name: macos-x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: target/x86_64-apple-darwin/release/obsidian-web
+            extension: tar.gz
+          - name: windows-x86_64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            binary: target/x86_64-pc-windows-msvc/release/obsidian-web.exe
+            extension: zip
+          - name: windows-aarch64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            binary: target/aarch64-pc-windows-msvc/release/obsidian-web.exe
+            extension: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: npm ci && npm run build
+        working-directory: web
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package Unix archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            version="${{ inputs.tag }}"
+            version="${version#v}"
+          fi
+          package="obsidian-web-${version}-${{ matrix.name }}"
+          mkdir -p "packages/${package}"
+          cp "${{ matrix.binary }}" "packages/${package}/obsidian-web"
+          cp README.md README.zh-CN.md LICENSE "packages/${package}/"
+          tar -C packages -czf "packages/${package}.tar.gz" "${package}"
+          rm -r "packages/${package}"
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $Version = "${{ github.ref_name }}".TrimStart("v")
+          if ("${{ github.ref_type }}" -ne "tag") {
+            $Version = "${{ inputs.tag }}".TrimStart("v")
+          }
+          $Package = "obsidian-web-$Version-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path "packages/$Package" | Out-Null
+          Copy-Item "${{ matrix.binary }}" "packages/$Package/obsidian-web.exe"
+          Copy-Item README.md, README.zh-CN.md, LICENSE "packages/$Package/"
+          Compress-Archive -Path "packages/$Package" -DestinationPath "packages/$Package.zip"
+          Remove-Item -Recurse -Force "packages/$Package"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: packages/*.${{ matrix.extension }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --title "Obsidian Web Gateway $RELEASE_TAG"

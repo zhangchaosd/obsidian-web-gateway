@@ -1,0 +1,260 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
+use axum::{
+    body::Body,
+    extract::ConnectInfo,
+    http::{HeaderMap, Request},
+    middleware::Next,
+    response::Response,
+};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::RngCore;
+
+use crate::error::{AppError, AppResult};
+
+const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+const FAILURE_WINDOW: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+pub struct AuthStore {
+    enabled: bool,
+    password_hash: Option<String>,
+    secure_cookie: bool,
+    inner: Arc<Mutex<AuthInner>>,
+}
+
+#[derive(Default)]
+struct AuthInner {
+    sessions: HashMap<String, Session>,
+    failures: HashMap<String, Vec<Instant>>,
+}
+
+struct Session {
+    csrf: String,
+    expires: Instant,
+}
+
+pub struct LoginResult {
+    pub cookie: String,
+    pub csrf: String,
+}
+
+impl AuthStore {
+    pub fn new(enabled: bool, password: Option<&str>, secure_cookie: bool) -> AppResult<Self> {
+        let password_hash = if enabled {
+            let password =
+                password.ok_or_else(|| AppError::InvalidRequest("password required".into()))?;
+            let mut salt_bytes = [0_u8; 16];
+            rand::rng().fill_bytes(&mut salt_bytes);
+            let salt = SaltString::encode_b64(&salt_bytes)
+                .map_err(|error| AppError::Internal(format!("salt encoding failed: {error}")))?;
+            Some(
+                Argon2::default()
+                    .hash_password(password.as_bytes(), &salt)
+                    .map_err(|error| {
+                        AppError::Internal(format!("password hashing failed: {error}"))
+                    })?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            enabled,
+            password_hash,
+            secure_cookie,
+            inner: Arc::new(Mutex::new(AuthInner::default())),
+        })
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn login(&self, password: &str, client: &str) -> AppResult<LoginResult> {
+        if !self.enabled {
+            return Ok(LoginResult {
+                cookie: String::new(),
+                csrf: String::new(),
+            });
+        }
+        let now = Instant::now();
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| AppError::Internal("auth lock poisoned".into()))?;
+            let failures = inner.failures.entry(client.to_owned()).or_default();
+            failures.retain(|attempt| now.duration_since(*attempt) < FAILURE_WINDOW);
+            if failures.len() >= 5 {
+                return Err(AppError::Forbidden);
+            }
+        }
+
+        let hash = self
+            .password_hash
+            .as_deref()
+            .ok_or(AppError::Unauthenticated)?;
+        let parsed = PasswordHash::new(hash)
+            .map_err(|_| AppError::Internal("invalid password hash".into()))?;
+        if Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_err()
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| AppError::Internal("auth lock poisoned".into()))?;
+            inner
+                .failures
+                .entry(client.to_owned())
+                .or_default()
+                .push(now);
+            return Err(AppError::Unauthenticated);
+        }
+
+        let session = random_token();
+        let csrf = random_token();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| AppError::Internal("auth lock poisoned".into()))?;
+        inner.failures.remove(client);
+        inner.sessions.retain(|_, value| value.expires > now);
+        inner.sessions.insert(
+            session.clone(),
+            Session {
+                csrf: csrf.clone(),
+                expires: now + SESSION_TTL,
+            },
+        );
+        let secure = if self.secure_cookie { "; Secure" } else { "" };
+        let cookie = format!(
+            "owg_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
+            SESSION_TTL.as_secs(),
+            secure
+        );
+        Ok(LoginResult { cookie, csrf })
+    }
+
+    pub fn logout(&self, headers: &HeaderMap) -> AppResult<()> {
+        if let Some(token) = cookie_value(headers, "owg_session") {
+            self.inner
+                .lock()
+                .map_err(|_| AppError::Internal("auth lock poisoned".into()))?
+                .sessions
+                .remove(token);
+        }
+        Ok(())
+    }
+
+    pub fn csrf_token(&self, headers: &HeaderMap) -> AppResult<String> {
+        if !self.enabled {
+            return Ok(String::new());
+        }
+        let token = cookie_value(headers, "owg_session").ok_or(AppError::Unauthenticated)?;
+        let now = Instant::now();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| AppError::Internal("auth lock poisoned".into()))?;
+        inner.sessions.retain(|_, session| session.expires > now);
+        inner
+            .sessions
+            .get(token)
+            .map(|session| session.csrf.clone())
+            .ok_or(AppError::Unauthenticated)
+    }
+
+    fn authorize(&self, headers: &HeaderMap, mutation: bool) -> AppResult<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let token = cookie_value(headers, "owg_session").ok_or(AppError::Unauthenticated)?;
+        let now = Instant::now();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| AppError::Internal("auth lock poisoned".into()))?;
+        inner.sessions.retain(|_, session| session.expires > now);
+        let session = inner.sessions.get(token).ok_or(AppError::Unauthenticated)?;
+        if mutation {
+            let csrf = headers
+                .get("x-csrf-token")
+                .and_then(|value| value.to_str().ok());
+            if csrf != Some(session.csrf.as_str()) {
+                return Err(AppError::Forbidden);
+            }
+        }
+        Ok(())
+    }
+}
+
+pub async fn require_auth(
+    axum::extract::State(auth): axum::extract::State<AuthStore>,
+    request: Request<Body>,
+    next: Next,
+) -> AppResult<Response> {
+    let mutation = !matches!(
+        *request.method(),
+        http::Method::GET | http::Method::HEAD | http::Method::OPTIONS
+    );
+    auth.authorize(request.headers(), mutation)?;
+    Ok(next.run(request).await)
+}
+
+pub fn client_key(connect: ConnectInfo<std::net::SocketAddr>) -> String {
+    connect.0.ip().to_string()
+}
+
+fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(http::header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .find_map(|part| {
+            let (key, value) = part.trim().split_once('=')?;
+            (key == name).then_some(value)
+        })
+}
+
+fn random_token() -> String {
+    let mut bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use http::HeaderValue;
+
+    #[test]
+    fn session_requires_csrf_for_mutations() {
+        let auth = AuthStore::new(true, Some("correct horse battery staple"), false).expect("auth");
+        assert!(auth.login("wrong", "client").is_err());
+        let login = auth
+            .login("correct horse battery staple", "client")
+            .expect("login");
+        let pair = login.cookie.split(';').next().expect("cookie pair");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::COOKIE,
+            HeaderValue::from_str(pair).expect("header"),
+        );
+        assert!(auth.authorize(&headers, false).is_ok());
+        assert!(auth.authorize(&headers, true).is_err());
+        headers.insert(
+            "x-csrf-token",
+            HeaderValue::from_str(&login.csrf).expect("csrf"),
+        );
+        assert!(auth.authorize(&headers, true).is_ok());
+    }
+}
