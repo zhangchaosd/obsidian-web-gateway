@@ -2,6 +2,10 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+![Obsidian Web Gateway preview](docs/assets/obsidian-web-gateway-preview.png)
+
+*The interface is shown with fictional Vault content.*
+
 Obsidian Web Gateway (OWG) is a small local daemon that gives an existing Obsidian Vault a secure browser UI. The Vault remains an ordinary directory of Markdown files and is always the source of truth.
 
 OWG is not an Obsidian replacement, sync service, hosted SaaS product, plugin runtime, or collaborative editor. It does not upload notes or collect telemetry.

@@ -2,6 +2,10 @@
 
 [English](README.md) | **简体中文**
 
+![Obsidian Web Gateway 界面预览](docs/assets/obsidian-web-gateway-preview.png)
+
+*界面中的 Vault 内容均为虚构演示数据。*
+
 Obsidian Web Gateway（OWG）是一个运行在本机的轻量守护程序，为已有的 Obsidian Vault 提供安全的浏览器访问界面。Vault 始终是普通的 Markdown 文件目录，也是唯一真实数据源。
 
 OWG 不是 Obsidian 替代品、同步服务、托管 SaaS、插件运行环境或多人协作编辑器。它不会上传笔记，也不收集遥测数据。
