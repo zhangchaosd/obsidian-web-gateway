@@ -16,7 +16,6 @@ use crate::{
     app::AppState,
     error::{AppError, AppResult},
     index::{BacklinksResponse, ResolveResponse, SearchResponse, VaultIndex},
-    security::auth,
     vault::models::*,
     websocket::GatewayEvent,
 };
@@ -76,11 +75,12 @@ pub struct LoginResponse {
 pub async fn login(
     State(state): State<AppState>,
     connect: axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> AppResult<Response> {
     let store = state.auth.clone();
     let password = request.password;
-    let client = auth::client_key(connect);
+    let client = store.client_key(connect.0.ip(), &headers);
     let result = tokio::task::spawn_blocking(move || store.login(&password, &client)).await??;
     let mut response = Json(LoginResponse {
         csrf_token: result.csrf,

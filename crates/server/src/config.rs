@@ -3,7 +3,10 @@ use std::{env, fs, net::SocketAddr, path::PathBuf};
 use clap::Parser;
 use serde::Deserialize;
 
-use crate::error::{AppError, AppResult};
+use crate::{
+    error::{AppError, AppResult},
+    security::proxy::TrustedProxy,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -30,6 +33,12 @@ struct Cli {
     password: Option<String>,
     #[arg(long)]
     secure_cookie: bool,
+    #[arg(
+        long = "trusted-proxy",
+        value_name = "IP_OR_CIDR",
+        value_delimiter = ','
+    )]
+    trusted_proxy: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -48,6 +57,7 @@ struct VaultSection {
 #[derive(Debug, Deserialize)]
 struct ServerSection {
     listen: Option<SocketAddr>,
+    trusted_proxies: Option<Vec<String>>,
 }
 #[derive(Debug, Deserialize)]
 struct AuthSection {
@@ -74,6 +84,7 @@ pub struct Config {
     pub auth_enabled: bool,
     pub password: Option<String>,
     pub secure_cookie: bool,
+    pub trusted_proxies: Vec<TrustedProxy>,
     pub markdown_limit: u64,
 }
 
@@ -93,6 +104,7 @@ impl Config {
             .or_else(|| file.vault.map(|section| section.path))
             .ok_or_else(|| AppError::InvalidRequest("--vault <PATH> is required".into()))?;
 
+        let file_server = file.server.as_ref();
         let listen = cli
             .listen
             .or_else(|| {
@@ -100,8 +112,26 @@ impl Config {
                     .ok()
                     .and_then(|v| v.parse().ok())
             })
-            .or_else(|| file.server.and_then(|section| section.listen))
+            .or_else(|| file_server.and_then(|section| section.listen))
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8765)));
+        let trusted_proxy_values = if !cli.trusted_proxy.is_empty() {
+            cli.trusted_proxy
+        } else if let Ok(value) = env::var("OBSIDIAN_WEB_TRUSTED_PROXIES") {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect()
+        } else {
+            file_server
+                .and_then(|section| section.trusted_proxies.clone())
+                .unwrap_or_default()
+        };
+        let trusted_proxies = trusted_proxy_values
+            .iter()
+            .map(|value| TrustedProxy::parse(value))
+            .collect::<AppResult<Vec<_>>>()?;
         let file_auth = file.auth.as_ref();
         let auth_enabled = if cli.no_auth {
             false
@@ -146,6 +176,7 @@ impl Config {
                 || file_auth
                     .and_then(|section| section.secure_cookie)
                     .unwrap_or(false),
+            trusted_proxies,
             markdown_limit: 10 * 1024 * 1024,
         })
     }

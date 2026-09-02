@@ -48,7 +48,8 @@ pub async fn run(config: Config) -> AppResult<()> {
         config.auth_enabled,
         config.password.as_deref(),
         config.secure_cookie,
-    )?;
+    )?
+    .with_trusted_proxies(config.trusted_proxies.clone());
     let vault = VaultService::new(sandbox, config.read_only, config.markdown_limit);
     let index = Arc::new(RwLock::new(index));
     let (events, _) = broadcast::channel(512);
@@ -62,7 +63,7 @@ pub async fn run(config: Config) -> AppResult<()> {
     let router = router(state);
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(vault = %vault_name, files = stats.files, markdown = stats.markdown, attachments = stats.attachments, index_ms = stats.build_ms, "vault indexed");
-    tracing::info!(listen = %config.listen, read_only = config.read_only, auth = config.auth_enabled, "listening");
+    tracing::info!(listen = %config.listen, read_only = config.read_only, auth = config.auth_enabled, trusted_proxies = config.trusted_proxies.len(), "listening");
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -194,6 +195,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::security::proxy::TrustedProxy;
 
     fn service(path: &std::path::Path, read_only: bool) -> AppResult<VaultService> {
         Ok(VaultService::new(
@@ -300,6 +302,77 @@ mod tests {
         assert_eq!(
             response.headers().get(header::RETRY_AFTER),
             Some(&header::HeaderValue::from_static("1"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn trusted_proxy_separates_login_limits_by_forwarded_client_ip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        fs::write(directory.path().join("A.md"), "one")?;
+        let auth = AuthStore::new(true, Some("a long test password"), false)?
+            .with_trusted_proxies(vec![TrustedProxy::parse("127.0.0.1/32")?]);
+        let application = router(state_for_tests(service(directory.path(), false)?, auth)?);
+        let proxy = ConnectInfo("127.0.0.1:12345".parse::<SocketAddr>()?);
+
+        let mut wrong = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", "203.0.113.10")
+            .body(Body::from(r#"{"password":"wrong"}"#))?;
+        wrong.extensions_mut().insert(proxy);
+        assert_eq!(
+            application.clone().oneshot(wrong).await?.status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let mut other_client = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", "203.0.113.11")
+            .body(Body::from(r#"{"password":"a long test password"}"#))?;
+        other_client.extensions_mut().insert(proxy);
+        assert_eq!(
+            application.oneshot(other_client).await?.status(),
+            StatusCode::OK
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn untrusted_peer_cannot_change_login_bucket_with_forwarded_header()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        fs::write(directory.path().join("A.md"), "one")?;
+        let auth = AuthStore::new(true, Some("a long test password"), false)?;
+        let application = router(state_for_tests(service(directory.path(), false)?, auth)?);
+        let peer = ConnectInfo("198.51.100.20:12345".parse::<SocketAddr>()?);
+
+        let mut wrong = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", "203.0.113.10")
+            .body(Body::from(r#"{"password":"wrong"}"#))?;
+        wrong.extensions_mut().insert(peer);
+        assert_eq!(
+            application.clone().oneshot(wrong).await?.status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let mut spoofed = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", "203.0.113.11")
+            .body(Body::from(r#"{"password":"a long test password"}"#))?;
+        spoofed.extensions_mut().insert(peer);
+        assert_eq!(
+            application.oneshot(spoofed).await?.status(),
+            StatusCode::TOO_MANY_REQUESTS
         );
         Ok(())
     }

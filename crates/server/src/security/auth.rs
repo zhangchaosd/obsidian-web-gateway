@@ -7,7 +7,6 @@ use std::{
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::{
     body::Body,
-    extract::ConnectInfo,
     http::{HeaderMap, Request},
     middleware::Next,
     response::Response,
@@ -15,7 +14,10 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
 
-use crate::error::{AppError, AppResult};
+use crate::{
+    error::{AppError, AppResult},
+    security::proxy::{self, TrustedProxy},
+};
 
 const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
@@ -26,6 +28,7 @@ pub struct AuthStore {
     enabled: bool,
     password_hash: Option<String>,
     secure_cookie: bool,
+    trusted_proxies: Vec<TrustedProxy>,
     inner: Arc<Mutex<AuthInner>>,
 }
 
@@ -71,12 +74,22 @@ impl AuthStore {
             enabled,
             password_hash,
             secure_cookie,
+            trusted_proxies: Vec::new(),
             inner: Arc::new(Mutex::new(AuthInner::default())),
         })
     }
 
+    pub fn with_trusted_proxies(mut self, trusted_proxies: Vec<TrustedProxy>) -> Self {
+        self.trusted_proxies = trusted_proxies;
+        self
+    }
+
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn client_key(&self, peer: std::net::IpAddr, headers: &HeaderMap) -> String {
+        proxy::client_ip(peer, headers, &self.trusted_proxies).to_string()
     }
 
     pub fn login(&self, password: &str, client: &str) -> AppResult<LoginResult> {
@@ -234,10 +247,6 @@ pub async fn require_auth(
     );
     auth.authorize(request.headers(), mutation)?;
     Ok(next.run(request).await)
-}
-
-pub fn client_key(connect: ConnectInfo<std::net::SocketAddr>) -> String {
-    connect.0.ip().to_string()
 }
 
 fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {

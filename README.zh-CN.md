@@ -57,6 +57,7 @@ obsidian-web --vault <PATH>
   --password <PASSWORD>    建议优先使用环境变量
   --no-auth                关闭登录
   --secure-cookie          在 HTTPS 反向代理后设置 Secure Cookie
+  --trusted-proxy <CIDR>   仅信任此代理提供的 X-Forwarded-For；可重复指定
 ```
 
 服务默认只监听本机回环地址。必须显式指定 `0.0.0.0` 才会允许局域网访问。
@@ -71,6 +72,7 @@ path = "/Users/user/Documents/MyVault"
 
 [server]
 listen = "127.0.0.1:8765"
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
 
 [auth]
 enabled = true
@@ -84,19 +86,29 @@ show_hidden_files = false
 level = "info"
 ```
 
-支持的环境变量包括 `OBSIDIAN_WEB_VAULT`、`OBSIDIAN_WEB_LISTEN`、`OBSIDIAN_WEB_PASSWORD`、`OBSIDIAN_WEB_AUTH_ENABLED`、`OBSIDIAN_WEB_READ_ONLY` 和 `OBSIDIAN_WEB_LOG_LEVEL`。
+支持的环境变量包括 `OBSIDIAN_WEB_VAULT`、`OBSIDIAN_WEB_LISTEN`、`OBSIDIAN_WEB_PASSWORD`、`OBSIDIAN_WEB_AUTH_ENABLED`、`OBSIDIAN_WEB_READ_ONLY`、`OBSIDIAN_WEB_LOG_LEVEL` 和 `OBSIDIAN_WEB_TRUSTED_PROXIES`（以逗号分隔的 IP 或 CIDR）。
 
 ## 主要功能
 
-- 浏览、搜索和预览现有 Obsidian Vault
-- 使用 CodeMirror 编辑 Markdown
-- 创建文件与目录、重命名、移动和恢复性删除
-- Wiki Link、图片嵌入、Backlinks 和 Outline
-- 文件系统监听与 WebSocket 外部修改通知
-- SHA-256 revision 冲突检测和显式强制覆盖
-- 桌面与移动浏览器响应式界面
-- 服务端强制只读模式
-- 单可执行文件发布
+- 显式多标签工作区：左侧导航复用当前标签，只有点击 `+` 才创建新标签
+- 文件、搜索结果、Wiki Link 和 Backlinks 遵循“一个文件一个标签”，避免重复编辑器和过期副本
+- CodeMirror Markdown 编辑、精致阅读模式、自动保存、行号、字数统计、Outline 和 Backlinks
+- 全文搜索、Wiki Link 解析、图片嵌入、任务列表、表格与安全净化的 Markdown 预览
+- 创建、重命名、移动和恢复性删除文件与目录，支持拖放文件进出目录
+- WebSocket 外部修改通知、SHA-256 revision 冲突检测、并排比较和显式强制覆盖
+- 桌面与移动端响应式界面、明暗配色、键盘快捷键和无障碍应用内对话框
+- Argon2 登录、CSRF 防护、可信 Caddy/反向代理后的真实客户端限速，以及服务端强制只读模式
+- 前端嵌入单一可执行文件，运行时不依赖 Node.js
+
+## Demo Vault
+
+仓库内置 [`demo-vault`](demo-vault)，包含虚构项目、用户研究、日报、Wiki Link、任务列表、表格和本地 SVG 附件，可用于界面评估和自动截图。仅在本机可信环境中可以免登录启动：
+
+```bash
+cargo run -- --vault ./demo-vault --listen 127.0.0.1:8765 --no-auth
+```
+
+当服务可通过反向代理或任何不可信网络访问时，请勿使用 `--no-auth`。
 
 ## 安全
 
@@ -116,7 +128,19 @@ notes.example.com {
 }
 ```
 
-OWG 应继续监听 `127.0.0.1` 并启用 `--secure-cookie`。如果代理位于另一台主机，请使用 WireGuard、Tailscale 等私有隧道。
+启动 OWG 时显式信任本机 Caddy：
+
+```bash
+OBSIDIAN_WEB_PASSWORD='请设置一个足够长的密码' ./obsidian-web \
+  --vault /path/to/MyVault \
+  --listen 127.0.0.1:8765 \
+  --secure-cookie \
+  --trusted-proxy 127.0.0.1/32
+```
+
+Caddy 会为上游请求设置 `X-Forwarded-For`。只有 TCP 对端命中已配置的可信代理时，OWG 才会使用该头进行按客户端 IP 的登录限速，并从右向左严格解析多级代理链；其他来源携带的转发头会被忽略。切勿把 `0.0.0.0/0` 或 `::/0` 配置为可信代理，否则能直连 OWG 的客户端可以伪造限速身份。
+
+OWG 应继续只监听 `127.0.0.1`。如果 Caddy 通过 IPv6 回环连接，再增加 `--trusted-proxy ::1/128`。如果代理位于另一台主机，只信任它的精确私网地址或尽可能窄的网段，并使用 WireGuard、Tailscale 等私有隧道。
 
 ## 从源码开发
 

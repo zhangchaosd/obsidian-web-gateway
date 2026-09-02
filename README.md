@@ -34,7 +34,7 @@ npm ci
 npm run build
 cd ..
 OBSIDIAN_WEB_PASSWORD='choose-a-long-password' cargo run --release -- \
-  --vault ./tests/fixtures/basic \
+  --vault ./demo-vault \
   --listen 127.0.0.1:8765
 ```
 
@@ -54,6 +54,7 @@ obsidian-web --vault <PATH>
   --password <PASSWORD>    preferably use OBSIDIAN_WEB_PASSWORD
   --no-auth                disable login
   --secure-cookie          mark session cookies Secure behind HTTPS
+  --trusted-proxy <CIDR>   trust X-Forwarded-For only from this proxy; repeatable
 ```
 
 The server listens only on loopback by default. LAN/public binding must be explicit.
@@ -68,6 +69,7 @@ path = "/Users/user/Documents/MyVault"
 
 [server]
 listen = "127.0.0.1:8765"
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
 
 [auth]
 enabled = true
@@ -81,7 +83,28 @@ show_hidden_files = false
 level = "info"
 ```
 
-Supported environment variables are `OBSIDIAN_WEB_VAULT`, `OBSIDIAN_WEB_LISTEN`, `OBSIDIAN_WEB_PASSWORD`, `OBSIDIAN_WEB_AUTH_ENABLED`, `OBSIDIAN_WEB_READ_ONLY`, and `OBSIDIAN_WEB_LOG_LEVEL`.
+Supported environment variables are `OBSIDIAN_WEB_VAULT`, `OBSIDIAN_WEB_LISTEN`, `OBSIDIAN_WEB_PASSWORD`, `OBSIDIAN_WEB_AUTH_ENABLED`, `OBSIDIAN_WEB_READ_ONLY`, `OBSIDIAN_WEB_LOG_LEVEL`, and `OBSIDIAN_WEB_TRUSTED_PROXIES` (comma-separated IPs or CIDRs).
+
+## Features
+
+- Explicit multi-tab workspace: sidebar navigation replaces the current tab, while `+` deliberately opens a new one
+- One note per tab across files, search results, Wiki Links, and Backlinks, avoiding duplicate editors and stale copies
+- CodeMirror Markdown editing, polished reading mode, autosave, line controls, word counts, Outline, and Backlinks
+- Full-text search, Wiki Link resolution, image embeds, task lists, tables, and sanitized preview HTML
+- Create, rename, move, and recoverably delete files and folders, including drag-and-drop file moves
+- External-change notifications, SHA-256 revision conflicts, side-by-side comparison, and explicit overwrite recovery
+- Responsive desktop/mobile workspace, light/dark color schemes, keyboard shortcuts, and accessible dialogs
+- Argon2 login, CSRF protection, per-client throttling behind explicitly trusted Caddy/reverse proxies, and server-enforced read-only mode
+
+## Demo vault
+
+The repository includes [`demo-vault`](demo-vault) with fictional projects, research, daily notes, Wiki Links, tasks, tables, and a local SVG attachment. It is safe for UI evaluation and automated screenshots. To run it without authentication, keep the listener on localhost:
+
+```bash
+cargo run -- --vault ./demo-vault --listen 127.0.0.1:8765 --no-auth
+```
+
+Do not use `--no-auth` when the service is reachable through a reverse proxy or any untrusted network.
 
 ## Security
 
@@ -101,7 +124,19 @@ notes.example.com {
 }
 ```
 
-Run OWG with `--secure-cookie` and keep it bound to `127.0.0.1`. Proxy headers are not trusted or used for authorization in this release. For a proxy on another machine, use a private tunnel such as WireGuard or Tailscale.
+Run OWG with the local Caddy address as an explicitly trusted proxy:
+
+```bash
+OBSIDIAN_WEB_PASSWORD='choose-a-long-password' ./obsidian-web \
+  --vault /path/to/MyVault \
+  --listen 127.0.0.1:8765 \
+  --secure-cookie \
+  --trusted-proxy 127.0.0.1/32
+```
+
+Caddy sets `X-Forwarded-For` for upstream requests. OWG uses it for per-client login throttling only when the TCP peer matches a configured trusted proxy, and parses proxy chains from right to left. Requests from any other peer ignore forwarding headers. Never configure `0.0.0.0/0` or `::/0` as a trusted proxy; doing so would allow clients that can reach OWG directly to spoof their rate-limit identity.
+
+Keep OWG bound to `127.0.0.1`. If Caddy connects over IPv6 loopback, also add `--trusted-proxy ::1/128`. For a proxy on another machine, trust only its exact private address or narrow network and use a private tunnel such as WireGuard or Tailscale.
 
 ## Development
 
@@ -124,7 +159,7 @@ npm run test:e2e
 
 ## Testing
 
-Rust tests cover sandbox traversal, platform-style paths, symlink escape, authentication/CSRF, parser behavior, read-only enforcement, atomic replacement, watcher refresh, and revision conflicts. Frontend tests cover Markdown XSS sanitization, GFM task lists, Wiki Links, embeds, and code-span handling. Playwright exercises the embedded UI in desktop and mobile Chromium profiles.
+Rust tests cover sandbox traversal, platform-style paths, symlink escape, authentication/CSRF, trusted-proxy client identity, parser behavior, read-only enforcement, atomic replacement, watcher refresh, and revision conflicts. Frontend tests cover Markdown XSS sanitization, GFM task lists, Wiki Links, embeds, and code-span handling. Playwright exercises tabs, draft protection, drag-and-drop moves, embedded assets, and responsive navigation in desktop and mobile Chromium profiles.
 
 For manual acceptance, copy a real Vault (do not start with the only copy), run OWG, edit the same note in Obsidian Desktop and the browser, and verify the browser reports external modifications rather than overwriting them.
 
