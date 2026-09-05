@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { renderMarkdown } from "./markdown";
+import { getOutline, renderMarkdown } from "./markdown";
 
 describe("Markdown preview", () => {
   it("sanitizes active HTML", () => {
@@ -36,6 +36,15 @@ describe("Markdown preview", () => {
   it("does not render YAML frontmatter as document headings", () => {
     const html = renderMarkdown("---\ntitle: Hidden metadata\n---\n# Visible", "A.md");
     expect(html).not.toContain("Hidden metadata");
-    expect(html).toContain("<h1>Visible</h1>");
+    expect(html).toContain('data-line="4"');
+    expect(html).toContain("Visible</h1>");
   });
+});
+
+it("keeps outline and preview line anchors aligned, excluding code and metadata", () => {
+  const source = "---\ntitle: Hidden\n---\n# First\n\n```md\n# Not a heading\n```\n\nSecond\n------\n";
+  expect(getOutline(source)).toEqual([{ level: 1, text: "First", line: 4 }, { level: 2, text: "Second", line: 10 }]);
+  const html = renderMarkdown(source, "A.md");
+  expect(html).toContain('data-line="10"');
+  expect(html).not.toContain('data-line="7"');
 });

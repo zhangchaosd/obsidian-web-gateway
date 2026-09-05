@@ -1,11 +1,11 @@
-import { markdown } from "@codemirror/lang-markdown";
-import CodeMirror from "@uiw/react-codemirror";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError, api, clearSession, login, q, restoreSession,
   type Backlink, type SearchResult, type SystemInfo, type TreeEntry, type VaultFile
 } from "./api";
-import { renderMarkdown } from "./markdown";
+import { getOutline, renderMarkdown } from "./markdown";
+
+const MarkdownEditor = lazy(() => import("./MarkdownEditor"));
 
 type DocumentState = VaultFile & {
   savedContent: string;
@@ -24,7 +24,7 @@ type MutationDialog = { kind: "file" | "directory" | "rename" | "delete"; value:
 type IconName = "archive" | "arrow-left" | "book" | "check" | "chevron" | "close" | "document" | "edit" | "external" | "file-plus" | "folder" | "folder-plus" | "info" | "link" | "menu" | "more" | "panel" | "preview" | "save" | "search" | "sparkle" | "trash";
 
 export default function App() {
-  const [tabs, setTabs] = useState<WorkspaceTab[]>(() => [newWorkspaceTab(1)]);
+  const [tabs, setTabsState] = useState<WorkspaceTab[]>(() => [newWorkspaceTab(1)]);
   const [activeTabId, setActiveTabId] = useState(1);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [authenticated, setAuthenticated] = useState(false);
@@ -33,7 +33,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
   const [drawer, setDrawer] = useState(false);
-  const [rightOpen, setRightOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(() => window.innerWidth > 1050);
   const [contextTab, setContextTab] = useState<"outline" | "backlinks">("outline");
   const [pendingPath, setPendingPath] = useState<string | null>(null);
   const [pendingCloseTab, setPendingCloseTab] = useState<number | null>(null);
@@ -41,6 +41,17 @@ export default function App() {
   const [draggedPath, setDraggedPath] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [searchState, setSearchState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const searchSequence = useRef(0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmation, setConfirmation] = useState<{ title: string; body: string; action: () => void } | null>(null);
+  const [jump, setJump] = useState<{ line: number; sequence: number } | null>(null);
+  const [activeHeading, setActiveHeading] = useState<number | null>(null);
+  const previewRef = useRef<HTMLElement>(null);
+  const loadSequence = useRef(new Map<number, number>());
+  const syncSequence = useRef(new Map<number, number>());
+  const saving = useRef(new Set<number>());
+  const [mutating, setMutating] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [autosave, setAutosave] = useState(() => localStorage.getItem("owg-autosave") === "true");
   const [lineNumbers, setLineNumbers] = useState(() => localStorage.getItem("owg-line-numbers") !== "false");
@@ -49,6 +60,13 @@ export default function App() {
   const tabsRef = useRef(tabs);
   const activeTabIdRef = useRef(activeTabId);
   const tabSequenceRef = useRef(1);
+
+  const setTabs = useCallback((update: React.SetStateAction<WorkspaceTab[]>) => {
+    const next = typeof update === "function" ? update(tabsRef.current) : update;
+    tabsRef.current = next;
+    documentRef.current = next.find(tab => tab.id === activeTabIdRef.current)?.document ?? null;
+    setTabsState(next);
+  }, []);
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0];
   const document = activeTab.document;
@@ -60,7 +78,7 @@ export default function App() {
 
   const updateTab = useCallback((tabId: number, update: (tab: WorkspaceTab) => WorkspaceTab) => {
     setTabs(current => current.map(tab => tab.id === tabId ? update(tab) : tab));
-  }, []);
+  }, [setTabs]);
 
   const setDocument = useCallback((update: React.SetStateAction<DocumentState | null>) => {
     const tabId = activeTabIdRef.current;
@@ -75,8 +93,7 @@ export default function App() {
     updateTab(activeTabIdRef.current, tab => ({ ...tab, showDiff }));
   }, [updateTab]);
 
-  useEffect(() => { documentRef.current = document; }, [document]);
-  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  documentRef.current = document;
 
   const refreshTree = useCallback(async () => {
     const response = await api<{ entries: TreeEntry[] }>("/api/v1/tree");
@@ -104,16 +121,21 @@ export default function App() {
   const fetchBacklinks = useCallback(async (path: string, tabId = activeTabIdRef.current) => {
     try {
       const response = await api<{ items: Backlink[] }>(`/api/v1/backlinks?path=${q(path)}`);
-      updateTab(tabId, tab => ({ ...tab, backlinks: response.items }));
-    } catch { updateTab(tabId, tab => ({ ...tab, backlinks: [] })); }
+      updateTab(tabId, tab => tab.document?.path === path ? { ...tab, backlinks: response.items } : tab);
+    } catch { updateTab(tabId, tab => tab.document?.path === path ? { ...tab, backlinks: [] } : tab); }
   }, [updateTab]);
 
-  const loadFile = useCallback(async (path: string) => {
-    const tabId = activeTabIdRef.current;
+  const loadFile = useCallback(async (path: string, tabId = activeTabIdRef.current) => {
+    const before = tabsRef.current.find(tab => tab.id === tabId)?.document;
+    const sequence = (loadSequence.current.get(tabId) ?? 0) + 1;
+    loadSequence.current.set(tabId, sequence);
     setStatus("Loading");
     setError("");
     try {
       const file = await api<VaultFile>(`/api/v1/file?path=${q(path)}`);
+      if (loadSequence.current.get(tabId) !== sequence) return;
+      const latest = tabsRef.current.find(tab => tab.id === tabId)?.document;
+      if (latest?.dirty && latest.content !== before?.content) { setError("Your draft changed while the note was loading. Open the note again when ready."); setStatus("Unsaved"); return; }
       updateTab(tabId, tab => ({
         ...tab,
         document: { ...file, savedContent: file.content, dirty: false, externalChangeDetected: false },
@@ -121,7 +143,8 @@ export default function App() {
         showDiff: false
       }));
       setStatus(system?.features.readOnly ? "Read-only" : "Saved");
-      setDrawer(false);
+      setActiveHeading(null); setJump(null);
+      setDrawer(false); if (window.innerWidth <= 1050) setRightOpen(false);
       await fetchBacklinks(path, tabId);
     } catch (cause) { setError(messageOf(cause)); setStatus("Error"); }
   }, [fetchBacklinks, system?.features.readOnly, updateTab]);
@@ -130,6 +153,7 @@ export default function App() {
     const openTabs = tabsRef.current;
     const existing = openTabs.find(tab => tab.document?.path === path);
     if (existing) {
+      loadSequence.current.set(existing.id, (loadSequence.current.get(existing.id) ?? 0) + 1);
       const currentTabId = activeTabIdRef.current;
       const currentTab = openTabs.find(tab => tab.id === currentTabId);
       if (currentTab && currentTab.id !== existing.id && currentTab.document === null) {
@@ -138,9 +162,10 @@ export default function App() {
       activeTabIdRef.current = existing.id;
       documentRef.current = existing.document;
       setActiveTabId(existing.id);
+      setJump(null); setActiveHeading(null);
       setPendingPath(null);
       setError("");
-      setDrawer(false);
+      setDrawer(false); if (window.innerWidth <= 1050) setRightOpen(false);
       setStatus(system?.features.readOnly ? "Read-only" : existing.document?.dirty ? "Unsaved" : "Saved");
       return;
     }
@@ -152,31 +177,33 @@ export default function App() {
   const save = useCallback(async (force = false): Promise<boolean> => {
     const current = documentRef.current;
     const tabId = activeTabIdRef.current;
-    if (!current || system?.features.readOnly) return false;
+    if (!current || system?.features.readOnly || saving.current.has(tabId)) return false;
+    syncSequence.current.set(tabId, (syncSequence.current.get(tabId) ?? 0) + 1);
+    saving.current.add(tabId);
     setStatus("Saving");
     try {
       const response = await api<{ path: string; revision: VaultFile["revision"] }>("/api/v1/file", {
         method: "PUT",
         body: JSON.stringify({ path: current.path, content: current.content, baseRevision: { hash: current.revision.hash }, force })
       });
-      updateTab(tabId, tab => ({ ...tab, document: tab.document ? { ...tab.document, revision: response.revision, savedContent: current.content, dirty: tab.document.content !== current.content, externalChangeDetected: false, externalContent: undefined } : null }));
+      updateTab(tabId, tab => ({ ...tab, document: tab.document?.path === current.path ? { ...tab.document, revision: response.revision, savedContent: current.content, dirty: tab.document.content !== current.content, externalChangeDetected: false, externalContent: undefined } : tab.document }));
       setStatus("Saved");
       await refreshTree();
-      return true;
+      return tabsRef.current.find(tab => tab.id === tabId)?.document?.dirty === false;
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) {
         updateTab(tabId, tab => ({ ...tab, document: tab.document ? { ...tab.document, externalChangeDetected: true } : null }));
         setStatus("Conflict");
       } else { setError(messageOf(cause)); setStatus("Save failed"); }
       return false;
-    }
+    } finally { saving.current.delete(tabId); }
   }, [refreshTree, system?.features.readOnly, updateTab]);
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
-      if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "p" || (event.shiftKey && event.key.toLowerCase() === "f"))) { event.preventDefault(); searchRef.current?.focus(); }
-      if (event.key === "Escape") { setMutationDialog(null); setPendingPath(null); setPendingCloseTab(null); }
+      if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "p" || (event.shiftKey && event.key.toLowerCase() === "f"))) { event.preventDefault(); setDrawer(true); window.setTimeout(() => searchRef.current?.focus(), 0); }
+      if (event.key === "Escape") { setMutationDialog(null); setPendingPath(null); setPendingCloseTab(null); setConfirmation(null); setMenuOpen(false); setDrawer(false); if (window.innerWidth <= 1050) setRightOpen(false); }
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
@@ -196,51 +223,81 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [autosave, document?.content, document?.dirty, document?.externalChangeDetected, save, system?.features.readOnly]);
 
+  // Reconcile every open document. Recheck its identity and draft at response time.
+  const syncTab = useCallback(async (tabId: number, path: string, nextPath = path) => {
+    if (saving.current.has(tabId)) return;
+    const sequence = loadSequence.current.get(tabId);
+    const syncId = (syncSequence.current.get(tabId) ?? 0) + 1;
+    syncSequence.current.set(tabId, syncId);
+    try {
+      const file = await api<VaultFile>(`/api/v1/file?path=${q(nextPath)}`);
+      if (syncSequence.current.get(tabId) !== syncId || saving.current.has(tabId)) return;
+      updateTab(tabId, tab => {
+        const current = tab.document;
+        if (!current || current.path !== path || loadSequence.current.get(tabId) !== sequence) return tab;
+        if (current.revision.hash === file.revision.hash) return { ...tab, document: { ...current, path: nextPath } };
+        if (current.dirty) return { ...tab, document: { ...current, path: nextPath, externalChangeDetected: true, externalContent: file.content } };
+        return { ...tab, document: { ...file, savedContent: file.content, dirty: false, externalChangeDetected: false } };
+      });
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 404 && syncSequence.current.get(tabId) === syncId && loadSequence.current.get(tabId) === sequence) {
+        updateTab(tabId, tab => tab.document?.path !== path ? tab : tab.document.dirty
+          ? { ...tab, document: { ...tab.document, externalChangeDetected: true } }
+          : { ...tab, document: null, backlinks: [] });
+      }
+    }
+  }, [updateTab]);
+
   useEffect(() => {
     if (!authenticated) return;
     let socket: WebSocket | null = null;
     let reconnect = 0;
     let stopped = false;
     const connect = () => {
-      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(`${protocol}//${location.host}/api/v1/ws`);
+      socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/v1/ws`);
       socket.onopen = () => {
         setConnected(true);
-        const current = documentRef.current;
-        if (current && !current.dirty) void loadFile(current.path);
+        for (const tab of tabsRef.current) if (tab.document) void syncTab(tab.id, tab.document.path);
       };
       socket.onmessage = event => {
-        const message = JSON.parse(event.data) as { type: string; payload?: { path?: string; oldPath?: string; newPath?: string } };
-        const current = documentRef.current;
-        const affected = message.payload?.path === current?.path || message.payload?.newPath === current?.path || message.payload?.oldPath === current?.path;
-        if (affected && current) {
-          if (current.dirty) setDocument(value => value ? { ...value, externalChangeDetected: true } : value);
-          else if (message.type === "file.deleted") setDocument(null);
-          else void loadFile(message.payload?.newPath ?? current.path);
+        let message: { type: string; payload?: { path?: string; oldPath?: string; newPath?: string } };
+        try { message = JSON.parse(event.data); } catch { return; }
+        for (const tab of tabsRef.current) {
+          const path = tab.document?.path;
+          if (!path) continue;
+          const payload = message.payload;
+          if (payload?.path === path || payload?.oldPath === path || payload?.newPath === path) {
+            void syncTab(tab.id, path, payload?.oldPath === path ? payload.newPath ?? path : path);
+          }
+          if (message.type === "index.updated") void fetchBacklinks(path, tab.id);
         }
-        if (message.type.startsWith("file.") || message.type === "index.updated") void refreshTree();
+        if (message.type.startsWith("file.") || message.type === "index.updated") void refreshTree().catch(cause => setError(messageOf(cause)));
       };
       socket.onclose = () => { setConnected(false); if (!stopped) reconnect = window.setTimeout(connect, 2000); };
     };
     connect();
     return () => { stopped = true; window.clearTimeout(reconnect); socket?.close(); };
-  }, [authenticated, loadFile, refreshTree]);
+  }, [authenticated, syncTab, refreshTree, fetchBacklinks]);
 
+  const resetSearch = () => { searchSequence.current++; setSearch(""); setResults([]); setSearchState("idle"); };
   const runSearch = async () => {
-    if (!search.trim()) { setResults([]); return; }
+    const sequence = ++searchSequence.current;
+    if (!search.trim()) { setResults([]); setSearchState("idle"); return; }
+    setSearchState("loading");
     try {
       const response = await api<{ results: SearchResult[] }>(`/api/v1/search?q=${q(search)}`);
-      setResults(response.results);
-    } catch (cause) { setError(messageOf(cause)); }
+      if (sequence !== searchSequence.current) return;
+      setResults(response.results); setSearchState("done");
+    } catch (cause) { if (sequence === searchSequence.current) { setSearchState("error"); setError(messageOf(cause)); } }
   };
 
   const reviewConflict = async () => {
     const current = documentRef.current;
+    const tabId = activeTabIdRef.current;
     if (!current) return;
     try {
       const disk = await api<VaultFile>(`/api/v1/file?path=${q(current.path)}`);
-      setDocument(value => value ? { ...value, externalContent: disk.content } : value);
-      setShowDiff(true);
+      updateTab(tabId, tab => tab.document?.path === current.path ? { ...tab, document: { ...tab.document, externalContent: disk.content }, showDiff: true } : tab);
     } catch (cause) { setError(messageOf(cause)); }
   };
 
@@ -283,14 +340,15 @@ export default function App() {
 
   const submitMutation = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!mutationDialog) return;
+    if (!mutationDialog || mutating) return;
+    setMutating(true);
     const value = mutationDialog.value.trim();
     try {
       if (mutationDialog.kind === "file") {
         if (!value) return;
         const path = value.toLowerCase().endsWith(".md") ? value : `${value}.md`;
-        await api("/api/v1/files", { method: "POST", body: JSON.stringify({ path, content: "# Untitled\n\nStart writing here…\n" }) });
-        setMutationDialog(null); await refreshTree(); await loadFile(path);
+        await api("/api/v1/files", { method: "POST", body: JSON.stringify({ path, content: `# ${fileTitle(path)}\n\n` }) });
+        setMutationDialog(null); await refreshTree(); requestOpen(path);
       } else if (mutationDialog.kind === "directory") {
         if (!value) return;
         await api("/api/v1/directories", { method: "POST", body: JSON.stringify({ path: value }) });
@@ -312,7 +370,7 @@ export default function App() {
         setTabs(openTabs => openTabs.map(tab => tab.document?.path === deletedPath ? { ...tab, document: null, backlinks: [], showDiff: false } : tab));
         setMutationDialog(null); await refreshTree();
       }
-    } catch (cause) { setError(messageOf(cause)); }
+    } catch (cause) { setError(messageOf(cause)); } finally { setMutating(false); }
   };
 
   const navigateWiki = async (target: string) => {
@@ -325,19 +383,28 @@ export default function App() {
   };
 
   const preview = useMemo(() => document ? renderMarkdown(document.content, document.path) : "", [document?.content, document?.path]);
-  const outline = useMemo(() => document ? document.content.split("\n").flatMap((line, index) => {
-    const match = /^(#{1,6})\s+(.+)$/.exec(line);
-    return match ? [{ level: match[1].length, text: match[2], line: index + 1 }] : [];
-  }) : [], [document?.content]);
+  const outline = useMemo(() => document ? getOutline(document.content) : [], [document?.content]);
+  const jumpToHeading = (line: number) => {
+    setActiveHeading(line);
+    if (mode === "edit") setJump(value => ({ line, sequence: (value?.sequence ?? 0) + 1 }));
+    else {
+      const target = previewRef.current?.querySelector<HTMLElement>(`[data-line="${line}"]`);
+      target?.scrollIntoView({ block: "start", behavior: "instant" });
+      target?.focus({ preventScroll: true });
+    }
+    if (window.innerWidth <= 1050) setRightOpen(false);
+  };
   const noteCount = useMemo(() => countNotes(tree), [tree]);
   const wordCount = useMemo(() => document ? countWords(document.content) : 0, [document?.content]);
-  const title = document ? fileTitle(document.path) : system?.vault.name ?? "";
   const parentPath = document?.path.includes("/") ? document.path.slice(0, document.path.lastIndexOf("/")) : "Vault";
 
   const createNewTab = () => {
     const tab = newWorkspaceTab(++tabSequenceRef.current);
     setTabs(current => [...current, tab]);
+    activeTabIdRef.current = tab.id;
+    documentRef.current = null;
     setActiveTabId(tab.id);
+    setJump(null); setActiveHeading(null); setMenuOpen(false);
     setPendingPath(null);
     setError("");
     setStatus(system?.features.readOnly ? "Read-only" : "Ready");
@@ -346,7 +413,10 @@ export default function App() {
   const activateTab = (tabId: number) => {
     const tab = tabs.find(candidate => candidate.id === tabId);
     if (!tab) return;
+    activeTabIdRef.current = tabId;
+    documentRef.current = tab.document;
     setActiveTabId(tabId);
+    setJump(null); setActiveHeading(null); setMenuOpen(false);
     setPendingPath(null);
     setError("");
     setStatus(system?.features.readOnly ? "Read-only" : tab.document?.dirty ? "Unsaved" : tab.document ? "Saved" : "Ready");
@@ -381,43 +451,66 @@ export default function App() {
 
   const closingTab = pendingCloseTab === null ? null : tabs.find(tab => tab.id === pendingCloseTab) ?? null;
 
+  const modalKey = pendingPath ? "open" : closingTab ? "close" : mutationDialog ? `mutation-${mutationDialog.kind}` : confirmation ? "confirmation" : "";
+  useEffect(() => {
+    if (!modalKey) return;
+    const previous = window.document.activeElement as HTMLElement | null;
+    const dialog = window.document.querySelector<HTMLElement>('[aria-modal="true"]');
+    if (!dialog) return;
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]'));
+    const frame = requestAnimationFrame(() => focusable()[0]?.focus());
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = focusable(); const first = items[0]; const last = items[items.length - 1];
+      if (event.shiftKey && (window.document.activeElement === first || !dialog.contains(window.document.activeElement))) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (window.document.activeElement === last || !dialog.contains(window.document.activeElement))) { event.preventDefault(); first?.focus(); }
+    };
+    window.document.addEventListener("keydown", trap);
+    return () => { cancelAnimationFrame(frame); window.document.removeEventListener("keydown", trap); if (previous?.isConnected) previous.focus(); };
+  }, [modalKey]);
+
   if (!system) return <LoadingState error={error} />;
   if (!authenticated) return <Login vault={system.vault.name} onSuccess={boot} error={error} />;
 
-  const openMutation = (kind: MutationDialog["kind"]) => setMutationDialog({ kind, value: kind === "rename" ? document?.path ?? "" : "" });
+  const openMutation = (kind: MutationDialog["kind"]) => { setError(""); setMenuOpen(false); setMutationDialog({ kind, value: kind === "rename" ? document?.path ?? "" : "" }); };
+  const requestSignOut = () => {
+    if (tabsRef.current.some(tab => tab.document?.dirty)) setConfirmation({ title: "Sign out with unsaved changes?", body: "Your unsaved drafts will be discarded. Cancel to return and save them first.", action: () => void signOut() });
+    else void signOut();
+  };
 
-  return <div className={`app-shell ${rightOpen ? "context-open" : ""}`}>
+  return <div className={`app-shell ${rightOpen ? "context-open" : ""} ${mode === "preview" ? "reading-mode" : "editing-mode"}`}>
     <header className="topbar">
       <div className="topbar-leading">
         <button className="icon-button mobile-only" onClick={() => setDrawer(true)} aria-label="Open files"><Icon name="menu" /></button>
         <div className="document-location"><span>{parentPath}</span><strong title={document?.path ?? system.vault.name}>{document?.path ?? system.vault.name}</strong></div>
       </div>
       <div className="top-actions">
-        <div className={`sync-state ${connected ? "online" : "offline"}`} title={connected ? status : "Connection lost"}><span className="sync-dot" /><span>{connected ? status : "Offline"}</span></div>
+        <div className={`sync-state ${connected ? "online" : "offline"}`} title={connected ? "Live updates connected" : "Connection lost; reconnecting"}><span className="sync-dot" /><span>{connected ? "Connected" : "Reconnecting"}</span></div>
         {system.features.readOnly && <span className="badge">Read-only</span>}
         {document && <div className="mode-switch" role="group" aria-label="Document mode">
           <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")} aria-pressed={mode === "edit"}><Icon name="edit" /> Edit</button>
           <button className={mode === "preview" ? "active" : ""} onClick={() => setMode("preview")} aria-pressed={mode === "preview"}><Icon name="preview" /> Preview</button>
         </div>}
-        <button className={`icon-button ${rightOpen ? "active" : ""}`} onClick={() => setRightOpen(value => !value)} aria-label="Toggle context panel" aria-pressed={rightOpen}><Icon name="panel" /></button>
-        {system.authRequired && <button className="icon-button" onClick={() => void signOut()} aria-label="Sign out"><Icon name="external" /></button>}
+        <button className={`icon-button ${rightOpen ? "active" : ""}`} onClick={() => { setRightOpen(value => !value); setDrawer(false); }} aria-label="Toggle context panel" aria-pressed={rightOpen}><Icon name="panel" /></button>
+        {system.authRequired && <button className="icon-button" onClick={requestSignOut} aria-label="Sign out"><Icon name="external" /></button>}
       </div>
     </header>
 
     <aside className={`sidebar ${drawer ? "open" : ""}`}>
       <div className="vault-header"><div className="vault-mark"><Icon name="sparkle" /></div><div><strong>{system.vault.name}</strong><span>{noteCount} notes · local vault</span></div><button className="icon-button mobile-only" onClick={() => setDrawer(false)} aria-label="Close files"><Icon name="close" /></button></div>
       <form className="search-box" onSubmit={event => { event.preventDefault(); void runSearch(); }}>
-        <Icon name="search" /><input ref={searchRef} value={search} onChange={event => { setSearch(event.target.value); if (!event.target.value) setResults([]); }} placeholder="Search notes" aria-label="Search vault" />
-        {search ? <button type="button" onClick={() => { setSearch(""); setResults([]); }} aria-label="Clear search"><Icon name="close" /></button> : <kbd>⌘ P</kbd>}
+        <Icon name="search" /><input ref={searchRef} value={search} onChange={event => { searchSequence.current++; setSearch(event.target.value); setResults([]); setSearchState("idle"); }} placeholder="Search notes" aria-label="Search vault" />
+        {search ? <button type="button" onClick={resetSearch} aria-label="Clear search"><Icon name="close" /></button> : <kbd>⌘ P</kbd>}
       </form>
-      <div className={`sidebar-section-label root-drop-target ${draggedPath && dropTarget === "" ? "drop-active" : ""}`} onDragOver={event => { if (!draggedPath) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); }} onDrop={event => { event.preventDefault(); const path = draggedPath ?? event.dataTransfer.getData("text/plain"); if (path) void moveFile(path, ""); }}><span>{results.length ? "Search results" : draggedPath ? "Move to Vault root" : "Your files"}</span>{results.length > 0 && !draggedPath && <button onClick={() => { setResults([]); setSearch(""); }}><Icon name="arrow-left" /> All files</button>}</div>
+      <div className={`sidebar-section-label root-drop-target ${draggedPath && dropTarget === "" ? "drop-active" : ""}`} onDragOver={event => { if (!draggedPath) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); }} onDrop={event => { event.preventDefault(); const path = draggedPath ?? event.dataTransfer.getData("text/plain"); if (path) void moveFile(path, ""); }}><span>{searchState !== "idle" ? "Search results" : draggedPath ? "Move to Vault root" : "Your files"}</span>{searchState !== "idle" && !draggedPath && <button onClick={resetSearch}><Icon name="arrow-left" /> All files</button>}</div>
       {draggedPath && <div className="drag-help" role="status">Drop on a folder, or above to move to the root</div>}
-      <div className="sidebar-scroll">{results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}</div>
+      <div className="sidebar-scroll">{searchState === "loading" ? <div className="search-feedback" role="status"><Icon name="search" /><strong>Searching your vault…</strong></div> : searchState === "error" ? <div className="search-feedback" role="status"><Icon name="info" /><strong>Search failed</strong><button onClick={() => void runSearch()}>Try again</button></div> : searchState === "done" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>No notes found</strong><p>Try another word or a shorter phrase.</p><button onClick={resetSearch}>Clear search</button></div> : results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}</div>
       {!system.features.readOnly && <div className="file-actions"><button onClick={() => openMutation("file")}><Icon name="file-plus" /> New note</button><button className="icon-button" onClick={() => openMutation("directory")} aria-label="New folder"><Icon name="folder-plus" /></button></div>}
     </aside>
+    {rightOpen && <button className="context-scrim" onClick={() => setRightOpen(false)} aria-label="Close context panel" />}
     {drawer && <button className="scrim mobile-only" onClick={() => setDrawer(false)} aria-label="Close files" />}
 
-    <main className="workspace">
+    <main className="workspace" onClick={() => { if (menuOpen) setMenuOpen(false); }}>
       <div className="tab-strip" role="tablist" aria-label="Open notes">
         <div className="tab-scroll">{tabs.map(tab => {
           const tabTitle = tab.document ? fileTitle(tab.document.path) : "New tab";
@@ -429,27 +522,27 @@ export default function App() {
         <button className="new-tab-button" onClick={createNewTab} aria-label="New tab" title="New tab"><span>+</span></button>
       </div>
       {error && <div className="notice error" role="alert"><Icon name="info" /><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error"><Icon name="close" /></button></div>}
-      {document?.externalChangeDetected && <div className="notice conflict" role="alert"><Icon name="info" /><span>This note changed on disk. Your draft is safe.</span><button onClick={() => void loadFile(document.path)}>Reload</button><button onClick={() => void reviewConflict()}>Compare</button>{!system.features.readOnly && <button className="danger" onClick={() => void save(true)}>Overwrite</button>}</div>}
+      {document?.externalChangeDetected && <div className="notice conflict" role="alert"><Icon name="info" /><span>This note changed on disk. Your draft is safe.</span><button onClick={() => setConfirmation({ title: "Discard your draft?", body: "The version on disk will replace your unsaved changes.", action: () => void loadFile(document.path) })}>Reload</button><button onClick={() => void reviewConflict()}>Compare</button>{!system.features.readOnly && <button className="danger" onClick={() => setConfirmation({ title: "Overwrite the version on disk?", body: "Your draft will replace the external changes to this note.", action: () => void save(true) })}>Overwrite</button>}</div>}
       {document ? <>
-        <div className="document-heading"><div><span className="eyebrow">{parentPath}</span><div className="document-title">{title}</div></div>{!system.features.readOnly && <div className="heading-actions"><button className="icon-button" onClick={() => openMutation("rename")} aria-label="Rename or move note"><Icon name="more" /></button><button className="icon-button danger-icon" onClick={() => openMutation("delete")} aria-label="Move note to trash"><Icon name="trash" /></button></div>}</div>
         <div className="document-toolbar">
-          <div className={`save-state ${document.dirty ? "dirty" : ""}`}>{document.dirty && <span className="dirty-dot" />}<span>{document.dirty ? "● Unsaved" : "✓ Saved"}</span></div>
+          <div className={`save-state ${document.dirty ? "dirty" : ""}`}><span role="status">{document.externalChangeDetected ? "Conflict" : status === "Saving" ? "Saving…" : document.dirty ? "● Unsaved" : "✓ Saved"}</span></div>
           <div className="document-stats"><span>{wordCount} words</span><span>{outline.length} headings</span></div>
-          <div className="toolbar-actions"><label className="toggle-label"><input type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); localStorage.setItem("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode === "edit" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); localStorage.setItem("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty}><Icon name="save" /> Save</button>}</div>
+          <div className="toolbar-actions"><label className={`toggle-label ${system.features.readOnly ? "hidden" : ""}`}><input disabled={system.features.readOnly} type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); localStorage.setItem("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode === "edit" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); localStorage.setItem("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty || status === "Saving"}><Icon name="save" /> Save</button>}<div className="note-menu"><button className="icon-button" aria-label="Note actions" aria-expanded={menuOpen} onClick={event => { event.stopPropagation(); setMenuOpen(value => !value); }}><Icon name="more" /></button>{menuOpen && <div className="note-menu-popover"><span>Note actions</span>{!system.features.readOnly && <><button onClick={() => openMutation("rename")}><Icon name="edit" /> Rename or move note</button><button className="danger" onClick={() => openMutation("delete")}><Icon name="trash" /> Move note to trash</button></>}<button onClick={() => { setRightOpen(true); setMenuOpen(false); }}><Icon name="panel" /> Outline & backlinks</button></div>}</div></div>
         </div>
-        {showDiff && document.externalContent !== undefined ? <div className="diff-view"><section><h2>Your draft</h2><pre>{document.content}</pre></section><section><h2>Version on disk</h2><pre>{document.externalContent}</pre></section><button onClick={() => setShowDiff(false)}>Close comparison</button></div> : mode === "edit" ? <div className="editor-pane"><CodeMirror className="editor-surface" value={document.content} height="100%" extensions={[markdown()]} basicSetup={{ lineNumbers, foldGutter: false, highlightActiveLineGutter: false }} editable={!system.features.readOnly} onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)} aria-label="Markdown editor" /></div> : <article className="preview" onClick={event => { const target = (event.target as HTMLElement).closest<HTMLElement>("[data-wiki]")?.dataset.wiki; if (target) void navigateWiki(target); }} dangerouslySetInnerHTML={{ __html: preview }} />}
+        {showDiff && document.externalContent !== undefined ? <div className="diff-view"><section><h2>Your draft</h2><pre>{document.content}</pre></section><section><h2>Version on disk</h2><pre>{document.externalContent}</pre></section><button onClick={() => setShowDiff(false)}>Close comparison</button></div> : mode === "edit" ? <div className="editor-pane"><Suspense fallback={<div className="editor-loading" role="status">Opening editor…</div>}><MarkdownEditor key={document.path} value={document.content} lineNumbers={lineNumbers} readOnly={system.features.readOnly} jump={jump} onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)} /></Suspense></div> : <article ref={previewRef} className="preview" onClick={event => { const target = (event.target as HTMLElement).closest<HTMLElement>("[data-wiki]")?.dataset.wiki; if (target) void navigateWiki(target); }} dangerouslySetInnerHTML={{ __html: preview }} />}
       </> : <EmptyVault vault={system.vault.name} readOnly={system.features.readOnly} onCreate={() => openMutation("file")} />}
     </main>
 
     {rightOpen && <aside className="context-panel">
-      <div className="context-tabs" role="tablist"><button className={contextTab === "outline" ? "active" : ""} onClick={() => setContextTab("outline")} role="tab" aria-selected={contextTab === "outline"}>Outline</button><button className={contextTab === "backlinks" ? "active" : ""} onClick={() => setContextTab("backlinks")} role="tab" aria-selected={contextTab === "backlinks"}>Backlinks <span>{backlinks.length}</span></button></div>
-      {document ? contextTab === "outline" ? <section className="outline-list">{outline.length ? outline.map(item => <button key={`${item.line}-${item.text}`} style={{ paddingLeft: `${14 + (item.level - 1) * 12}px` }}><span>{item.text}</span><small>{item.line}</small></button>) : <ContextEmpty icon="book" title="No headings yet" body="Add a heading to create an outline." />}</section> : <section className="backlinks-list">{backlinks.length ? backlinks.map(item => <button className="backlink" key={item.path} onClick={() => requestOpen(item.path)}><span className="backlink-icon"><Icon name="link" /></span><span><strong>{fileTitle(item.path)}</strong><small>{item.references[0]?.context}</small></span></button>) : <ContextEmpty icon="link" title="No backlinks" body="Links to this note will appear here." />}</section> : <ContextEmpty icon="book" title="Nothing selected" body="Open a note to see its outline and backlinks." />}
+      <div className="context-tabs" role="tablist" aria-label="Note context"><button className="icon-button context-close" aria-label="Hide context panel" onClick={() => setRightOpen(false)}><Icon name="close" /></button><button className={contextTab === "outline" ? "active" : ""} onClick={() => setContextTab("outline")} role="tab" aria-selected={contextTab === "outline"}>Outline</button><button className={contextTab === "backlinks" ? "active" : ""} onClick={() => setContextTab("backlinks")} role="tab" aria-selected={contextTab === "backlinks"}>Backlinks <span>{backlinks.length}</span></button></div>
+      {document ? contextTab === "outline" ? <section className="outline-list">{outline.length ? outline.map(item => <button aria-current={activeHeading === item.line ? "location" : undefined} onClick={() => jumpToHeading(item.line)} key={`${item.line}-${item.text}`} style={{ paddingLeft: `${14 + (item.level - 1) * 12}px` }}><span>{item.text}</span><small>{item.line}</small></button>) : <ContextEmpty icon="book" title="No headings yet" body="Add a heading to create an outline." />}</section> : <section className="backlinks-list">{backlinks.length ? backlinks.map(item => <button className="backlink" key={item.path} onClick={() => requestOpen(item.path)}><span className="backlink-icon"><Icon name="link" /></span><span><strong>{fileTitle(item.path)}</strong><small>{item.references[0]?.context}</small></span></button>) : <ContextEmpty icon="link" title="No backlinks" body="Links to this note will appear here." />}</section> : <ContextEmpty icon="book" title="Nothing selected" body="Open a note to see its outline and backlinks." />}
       {document && <div className="note-metadata"><span>Note details</span><dl><div><dt>Location</dt><dd>{parentPath}</dd></div><div><dt>Words</dt><dd>{wordCount}</dd></div><div><dt>Format</dt><dd>Markdown</dd></div></dl></div>}
     </aside>}
 
+    {confirmation && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="confirmation-title">{confirmation.title}</h2><p>{confirmation.body}</p><div className="modal-actions"><button onClick={() => setConfirmation(null)}>Cancel</button><button className="danger-button" onClick={() => { confirmation.action(); setConfirmation(null); }}>Continue</button></div></div></div>}
     {pendingPath && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="unsaved-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="unsaved-title">Save your changes?</h2><p>You have an unsaved draft. Choose what to do before opening another note.</p><div className="modal-actions"><button onClick={() => setPendingPath(null)}>Keep editing</button><button onClick={() => { const path = pendingPath; setPendingPath(null); void loadFile(path); }}>Discard</button><button className="primary-button" onClick={async () => { if (await save()) { const path = pendingPath; setPendingPath(null); void loadFile(path); } }}>Save & open</button></div></div></div>}
     {closingTab && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="close-tab-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="close-tab-title">Close with unsaved changes?</h2><p>Save your changes to {closingTab.document ? fileTitle(closingTab.document.path) : "this note"} before closing its tab.</p><div className="modal-actions"><button onClick={() => setPendingCloseTab(null)}>Keep tab</button><button onClick={() => closeTabImmediately(closingTab.id)}>Discard & close</button><button className="primary-button" onClick={async () => { if (await save()) closeTabImmediately(closingTab.id); }}>Save & close</button></div></div></div>}
-    {mutationDialog && <MutationModal dialog={mutationDialog} documentPath={document?.path} onChange={value => setMutationDialog(current => current ? { ...current, value } : null)} onClose={() => setMutationDialog(null)} onSubmit={submitMutation} />}
+    {mutationDialog && <MutationModal busy={mutating} error={error} dialog={mutationDialog} documentPath={document?.path} onChange={value => setMutationDialog(current => current ? { ...current, value } : null)} onClose={() => setMutationDialog(null)} onSubmit={submitMutation} />}
   </div>;
 }
 
@@ -466,7 +559,7 @@ function Tree({ entries, activePath, draggedPath, dropTarget, readOnly, onOpen, 
   </details> : entry.type === "markdown" ? <button className={`${entry.path === activePath ? "active" : ""} ${entry.path === draggedPath ? "dragging" : ""}`} draggable={!readOnly} onDragStart={event => onDragStart(entry.path, event)} onDragEnd={onDragEnd} key={entry.path} onClick={() => onOpen(entry.path)} title={entry.path} style={{ paddingLeft: `${30 + depth * 14}px` }} aria-label={`Open ${entry.name}`}><Icon name="document" /><span>{entry.name.replace(/\.md$/i, "")}</span>{entry.path === activePath && <span className="active-pip" />}</button> : <a className={entry.path === draggedPath ? "dragging" : ""} draggable={!readOnly} onDragStart={event => onDragStart(entry.path, event)} onDragEnd={onDragEnd} key={entry.path} href={`/api/v1/asset?path=${q(entry.path)}`} target="_blank" rel="noreferrer" style={{ paddingLeft: `${30 + depth * 14}px` }}><Icon name="archive" /><span>{entry.name}</span></a>)}</nav>;
 }
 
-function MutationModal({ dialog, documentPath, onChange, onClose, onSubmit }: { dialog: MutationDialog; documentPath?: string; onChange: (value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent) => void }) {
+function MutationModal({ busy, error, dialog, documentPath, onChange, onClose, onSubmit }: { busy: boolean; error: string; dialog: MutationDialog; documentPath?: string; onChange: (value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent) => void }) {
   const copy = {
     file: { icon: "file-plus" as IconName, title: "Create a new note", body: "Choose a path inside your vault.", label: "Note path", placeholder: "Projects/New idea", action: "Create note" },
     directory: { icon: "folder-plus" as IconName, title: "Create a new folder", body: "Folders help keep related notes together.", label: "Folder path", placeholder: "Projects/Research", action: "Create folder" },
@@ -474,7 +567,7 @@ function MutationModal({ dialog, documentPath, onChange, onClose, onSubmit }: { 
     delete: { icon: "trash" as IconName, title: "Move note to trash?", body: `${documentPath ?? "This note"} will move to .trash and can be recovered from the vault.`, label: "", placeholder: "", action: "Move to trash" }
   }[dialog.kind];
   const destructive = dialog.kind === "delete";
-  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="mutation-title" onSubmit={onSubmit}><div className={`modal-icon ${destructive ? "danger" : ""}`}><Icon name={copy.icon} /></div><h2 id="mutation-title">{copy.title}</h2><p>{copy.body}</p>{!destructive && <label className="field-label">{copy.label}<input autoFocus value={dialog.value} onChange={event => onChange(event.target.value)} placeholder={copy.placeholder} /></label>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className={destructive ? "danger-button" : "primary-button"} type="submit" disabled={!destructive && !dialog.value.trim()}>{copy.action}</button></div></form></div>;
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="mutation-title" onSubmit={onSubmit}><div className={`modal-icon ${destructive ? "danger" : ""}`}><Icon name={copy.icon} /></div><h2 id="mutation-title">{copy.title}</h2><p>{copy.body}</p>{error && <p className="login-error" role="alert">{error}</p>}{!destructive && <label className="field-label">{copy.label}<input autoFocus value={dialog.value} onChange={event => onChange(event.target.value)} placeholder={copy.placeholder} /></label>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className={destructive ? "danger-button" : "primary-button"} type="submit" disabled={busy || (!destructive && !dialog.value.trim())}>{copy.action}</button></div></form></div>;
 }
 
 function EmptyVault({ vault, readOnly, onCreate }: { vault: string; readOnly: boolean; onCreate: () => void }) {

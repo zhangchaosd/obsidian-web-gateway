@@ -59,7 +59,14 @@ export function renderMarkdown(markdown: string, sourcePath: string): string {
     }
     return defaultImage ? defaultImage(tokens, index, options, env, self) : self.renderToken(tokens, index, options);
   };
-  return DOMPurify.sanitize(md.render(withoutFrontmatter(markdown)), {
+  const body = withoutFrontmatter(markdown);
+  const offset = markdown.slice(0, markdown.length - body.length).split("\n").length - 1;
+  md.renderer.rules.heading_open = (tokens, index, options, _env, self) => {
+    tokens[index].attrSet("data-line", String((tokens[index].map?.[0] ?? 0) + offset + 1));
+    tokens[index].attrSet("tabindex", "-1");
+    return self.renderToken(tokens, index, options);
+  };
+  return DOMPurify.sanitize(md.render(body), {
     FORBID_TAGS: ["script", "iframe", "object", "embed", "style"],
     FORBID_ATTR: ["style", "onerror", "onload"],
     ALLOW_DATA_ATTR: true
@@ -79,4 +86,16 @@ function normalizePath(value: string): string {
     if (part === "..") parts.pop(); else parts.push(part);
   }
   return parts.join("/");
+}
+
+export function getOutline(markdown: string): { level: number; text: string; line: number }[] {
+  const body = withoutFrontmatter(markdown);
+  const offset = markdown.slice(0, markdown.length - body.length).split("\n").length - 1;
+  const tokens = new MarkdownIt({ html: false }).parse(body, {});
+  return tokens.flatMap((token, index) => {
+    if (token.type !== "heading_open") return [];
+    const inline = tokens[index + 1];
+    const text = inline.children?.filter(child => child.type === "text" || child.type === "code_inline").map(child => child.content).join("") || inline.content;
+    return [{ level: Number(token.tag.slice(1)), text, line: (token.map?.[0] ?? 0) + offset + 1 }];
+  });
 }
