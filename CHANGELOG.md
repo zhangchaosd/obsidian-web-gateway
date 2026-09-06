@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-09-06
+
+- Preserve the visible content position when switching between edit, preview, and split modes using Markdown source-line anchors.
+- Restore positions within wrapped editor lines and rendered blocks, and keep the document bottom anchored across mode changes.
+- Reconcile late-loading preview images until the user interacts with the preview; new notes start at the top.
+- Added desktop and mobile regression tests for mid-document, bottom-of-document, and file-switch behavior.
+
 ## 0.4.0 — 2026-09-06
 
 - Added desktop split view with a resizable editor/preview divider, keyboard resizing, and a double-click reset.

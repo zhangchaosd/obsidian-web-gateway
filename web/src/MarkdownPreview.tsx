@@ -1,7 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { renderMarkdown } from "./markdown";
 
-export default function MarkdownPreview({ content, path, articleRef, onWiki }: {
+import { restorePreview, type ScrollPosition } from "./scrollPosition";
+
+export default function MarkdownPreview({ content, path, articleRef, position, onWiki }: {
+  position: ScrollPosition;
   content: string; path: string; articleRef: RefObject<HTMLElement | null>; onWiki: (target: string) => void;
 }) {
   const [renderedContent, setRenderedContent] = useState(content);
@@ -19,6 +22,23 @@ export default function MarkdownPreview({ content, path, articleRef, onWiki }: {
     articleRef.current?.scrollTo({ top: previousHtml.current === null ? 0 : scrollTop, left: previousHtml.current === null ? 0 : scrollLeft, behavior: "instant" });
     previousHtml.current = html;
   }, [html]);
+
+  useLayoutEffect(() => {
+    const article = articleRef.current;
+    if (!article) return;
+    restorePreview(article, position);
+    // Images can settle after the initial layout; stop once they load or the user interacts.
+    const loaded = () => Array.from(article.querySelectorAll("img")).every(image => image.complete);
+    if (loaded()) return;
+    const cancel = () => { article.removeEventListener("load", restore, true); };
+    const restore = () => { restorePreview(article, position); if (loaded()) cancel(); };
+    article.addEventListener("load", restore, true);
+    article.addEventListener("wheel", cancel, { once: true });
+    article.addEventListener("touchstart", cancel, { once: true });
+    article.addEventListener("pointerdown", cancel, { once: true });
+    article.addEventListener("keydown", cancel, { once: true });
+    return () => { cancel(); for (const name of ["wheel", "touchstart", "pointerdown", "keydown"]) article.removeEventListener(name, cancel); };
+  }, [position]);
 
   const copy = async (button: HTMLButtonElement) => {
     const code = button.closest(".code-block")?.querySelector("pre code")?.textContent;

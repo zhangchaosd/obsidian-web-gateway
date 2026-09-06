@@ -100,7 +100,7 @@ Supported environment variables are `OBSIDIAN_WEB_VAULT`, `OBSIDIAN_WEB_LISTEN`,
 
 Select **Split** on desktop to edit on the left and preview unsaved Markdown on the right. Updates follow a 200 ms typing pause (500 ms for notes over 100,000 characters). Preview does not save files: Save and Autosave control disk writes.
 
-Drag the divider to resize, double-click to reset, or use its arrow keys and Home/End. Split initially closes the context panel. Mobile retains Edit/Preview switching. Both panes scroll independently and preview updates preserve scroll position.
+Drag the divider to resize, double-click to reset, or use its arrow keys and Home/End. Split initially closes the context panel. Mobile retains Edit/Preview switching. Both panes scroll independently and preview updates preserve scroll position. Switching between Edit, Preview, and Split restores the corresponding content location using Markdown source-line anchors.
 
 Hover over a code block or focus its copy button to copy the complete code. Touch devices always show the button.
 

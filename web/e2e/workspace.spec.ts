@@ -231,3 +231,58 @@ test("copy failures show actionable feedback rather than reporting success", asy
   await expect(page.getByRole("button", { name: "Copy failed. Select the code and copy manually.", exact: true })).toBeVisible();
   await expect(page.locator(".clipboard-buffer")).toHaveCount(0);
 });
+
+test("mode switching restores the same section in editor, preview, and split", async ({ page }, info) => {
+  const mobile = info.project.name.startsWith("mobile");
+  await workspace(page, mobile);
+  const content = Array.from({ length: 24 }, (_, i) => `## Section ${i + 1}\n\n${"A paragraph with enough words to wrap across multiple lines. ".repeat(8)}\n\n`).join("");
+  await replaceDraft(page, content);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  const heading = page.getByRole("heading", { name: "Section 12", exact: true });
+  await heading.evaluate(element => {
+    const article = element.closest("article")!;
+    article.scrollTop += element.getBoundingClientRect().top - article.getBoundingClientRect().top;
+  });
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  const editorLine = page.locator(".cm-line").filter({ hasText: /^## Section 12$/ });
+  await expect(editorLine).toBeInViewport();
+  expect(await page.locator(".cm-scroller").evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await expect(heading).toBeInViewport();
+  expect(await heading.evaluate(element => Math.abs(element.getBoundingClientRect().top - element.closest("article")!.getBoundingClientRect().top))).toBeLessThan(80);
+  if (!mobile) {
+    await page.getByRole("button", { name: "Split", exact: true }).click();
+    await expect(editorLine).toBeInViewport();
+    await expect(heading).toBeInViewport();
+    await page.getByRole("button", { name: "Preview", exact: true }).click();
+  }
+  await page.locator(".preview").evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect.poll(() => page.locator(".cm-scroller").evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(3);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await expect.poll(() => page.locator(".preview").evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(3);
+  if (mobile) await page.getByRole("button", { name: "Open files", exact: true }).click();
+  await page.getByRole("button", { name: "Open B.md", exact: true }).click();
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Beta", exact: true })).toBeVisible();
+  expect(await page.locator(".preview").evaluate(element => element.scrollTop)).toBe(0);
+});
+
+test("late preview images do not move the restored section out of view", async ({ page }, info) => {
+  const mobile = info.project.name.startsWith("mobile");
+  await workspace(page, mobile);
+  let release: () => void = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/v1/asset?path=diagram.svg", async route => {
+    await gate;
+    await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="2000"><rect width="600" height="2000" fill="gray"/></svg>' });
+  });
+  await replaceDraft(page, '# Before\n\n![Diagram](diagram.svg)\n\n## After image\n\n' + 'A paragraph after the image.\n\n'.repeat(50));
+  if (mobile) await page.getByRole("button", { name: "Toggle context panel", exact: true }).click();
+  await page.locator(".outline-list").getByRole("button", { name: /After image/ }).click();
+  await expect(page.locator(".cm-activeLine")).toHaveText("## After image");
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  release();
+  await expect.poll(() => page.locator(".preview img").evaluate(image => (image as HTMLImageElement).naturalHeight)).toBe(2000);
+  await expect(page.getByRole("heading", { name: "After image", exact: true })).toBeInViewport();
+});

@@ -5,6 +5,7 @@ import {
 } from "./api";
 import { getOutline } from "./markdown";
 
+import { capturePreview, startPosition, type ScrollHandle, type ScrollPosition } from "./scrollPosition";
 import MarkdownPreview from "./MarkdownPreview";
 import SplitDivider, { splitStyle } from "./SplitDivider";
 
@@ -50,6 +51,8 @@ export default function App() {
   const [confirmation, setConfirmation] = useState<{ title: string; body: string; action: () => void } | null>(null);
   const [jump, setJump] = useState<{ line: number; sequence: number } | null>(null);
   const [activeHeading, setActiveHeading] = useState<number | null>(null);
+  const editorScrollRef = useRef<ScrollHandle | null>(null);
+  const [scrollPosition, setScrollPosition] = useState<ScrollPosition>(startPosition);
   const previewRef = useRef<HTMLElement>(null);
   const loadSequence = useRef(new Map<number, number>());
   const syncSequence = useRef(new Map<number, number>());
@@ -82,6 +85,7 @@ export default function App() {
     return () => media.removeEventListener("change", update);
   }, []);
   const mode = compact && activeTab.mode === "split" ? "edit" : activeTab.mode;
+  useEffect(() => { setScrollPosition({ ...startPosition }); }, [document?.path, activeTabId]);
   const backlinks = activeTab.backlinks;
   const showDiff = activeTab.showDiff;
 
@@ -96,10 +100,16 @@ export default function App() {
     updateTab(tabId, tab => ({ ...tab, document: typeof update === "function" ? update(tab.document) : update }));
   }, [updateTab]);
 
-  const setMode = useCallback((mode: "edit" | "preview" | "split") => {
-    if (mode === "split") setRightOpen(false);
-    updateTab(activeTabIdRef.current, tab => ({ ...tab, mode }));
-  }, [updateTab]);
+  const setMode = useCallback((nextMode: "edit" | "preview" | "split") => {
+    if (nextMode === mode) return;
+    const anchor = mode === "preview" || (mode === "split" && nextMode === "preview")
+      ? previewRef.current ? capturePreview(previewRef.current) : startPosition
+      : editorScrollRef.current?.capture() ?? startPosition;
+    setScrollPosition({ ...anchor });
+    setJump(null);
+    if (nextMode === "split") setRightOpen(false);
+    updateTab(activeTabIdRef.current, tab => ({ ...tab, mode: nextMode }));
+  }, [mode, updateTab]);
 
   const setShowDiff = useCallback((showDiff: boolean) => {
     updateTab(activeTabIdRef.current, tab => ({ ...tab, showDiff }));
@@ -542,9 +552,9 @@ export default function App() {
           <div className="toolbar-actions"><label className={`toggle-label ${system.features.readOnly ? "hidden" : ""}`}><input disabled={system.features.readOnly} type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); localStorage.setItem("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode !== "preview" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); localStorage.setItem("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty || status === "Saving"}><Icon name="save" /> Save</button>}<div className="note-menu"><button className="icon-button" aria-label="Note actions" aria-expanded={menuOpen} onClick={event => { event.stopPropagation(); setMenuOpen(value => !value); }}><Icon name="more" /></button>{menuOpen && <div className="note-menu-popover"><span>Note actions</span>{!system.features.readOnly && <><button onClick={() => openMutation("rename")}><Icon name="edit" /> Rename or move note</button><button className="danger" onClick={() => openMutation("delete")}><Icon name="trash" /> Move note to trash</button></>}<button onClick={() => { setRightOpen(true); setMenuOpen(false); }}><Icon name="panel" /> Outline & backlinks</button></div>}</div></div>
         </div>
         {showDiff && document.externalContent !== undefined ? <div className="diff-view"><section><h2>Your draft</h2><pre>{document.content}</pre></section><section><h2>Version on disk</h2><pre>{document.externalContent}</pre></section><button onClick={() => setShowDiff(false)}>Close comparison</button></div> : <div className={`document-panes ${mode === "split" ? "is-split" : ""}`} style={splitStyle(splitRatio)}>
-          {mode !== "preview" && <div key="editor" className="editor-pane">{mode === "split" && <div className="pane-caption"><Icon name="edit" /> Editor <span>Markdown</span></div>}<Suspense fallback={<div className="editor-loading" role="status">Opening editor…</div>}><MarkdownEditor key={document.path} value={document.content} lineNumbers={lineNumbers} readOnly={system.features.readOnly} jump={jump} onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)} /></Suspense></div>}
+          {mode !== "preview" && <div key="editor" className="editor-pane">{mode === "split" && <div className="pane-caption"><Icon name="edit" /> Editor <span>Markdown</span></div>}<Suspense fallback={<div className="editor-loading" role="status">Opening editor…</div>}><MarkdownEditor position={scrollPosition} scrollHandle={editorScrollRef} key={document.path} value={document.content} lineNumbers={lineNumbers} readOnly={system.features.readOnly} jump={jump} onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)} /></Suspense></div>}
           {mode === "split" && <SplitDivider ratio={splitRatio} onChange={setSplitRatio} />}
-          {mode !== "edit" && <div key="preview" className="preview-pane">{mode === "split" && <div className="pane-caption"><Icon name="preview" /> Preview <span><i /> Live draft</span></div>}<MarkdownPreview key={document.path} content={document.content} path={document.path} articleRef={previewRef} onWiki={target => void navigateWiki(target)} /></div>}
+          {mode !== "edit" && <div key="preview" className="preview-pane">{mode === "split" && <div className="pane-caption"><Icon name="preview" /> Preview <span><i /> Live draft</span></div>}<MarkdownPreview position={scrollPosition} key={document.path} content={document.content} path={document.path} articleRef={previewRef} onWiki={target => void navigateWiki(target)} /></div>}
         </div>}
 
       </> : <EmptyVault vault={system.vault.name} readOnly={system.features.readOnly} onCreate={() => openMutation("file")} />}

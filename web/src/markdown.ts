@@ -43,13 +43,15 @@ function splitAlias(value: string): [string, string | undefined] {
 }
 
 export function renderMarkdown(markdown: string, sourcePath: string): string {
+  const body = withoutFrontmatter(markdown);
+  const offset = markdown.slice(0, markdown.length - body.length).split("\n").length - 1;
   const md = new MarkdownIt({ html: false, linkify: true, typographer: false, breaks: true });
   md.use(taskLists, { enabled: false, label: true });
   wikiPlugin(md);
   for (const rule of ["fence", "code_block"] as const) {
     const render = md.renderer.rules[rule]!;
     md.renderer.rules[rule] = (tokens, index, options, env, self) =>
-      `<div class="code-block">${render(tokens, index, options, env, self)}<button type="button" class="code-copy" aria-label="Copy code" title="Copy code"><span class="copy-icon" aria-hidden="true"></span><span class="copy-label" aria-live="polite">Copy</span></button></div>`;
+      `<div class="code-block" data-source-start="${(tokens[index].map?.[0] ?? 0) + offset + 1}" data-source-end="${(tokens[index].map?.[1] ?? 1) + offset + 1}">${render(tokens, index, options, env, self)}<button type="button" class="code-copy" aria-label="Copy code" title="Copy code"><span class="copy-icon" aria-hidden="true"></span><span class="copy-label" aria-live="polite">Copy</span></button></div>`;
   }
   const defaultImage = md.renderer.rules.image;
   md.renderer.rules.image = (tokens, index, options, env, self) => {
@@ -64,8 +66,14 @@ export function renderMarkdown(markdown: string, sourcePath: string): string {
     }
     return defaultImage ? defaultImage(tokens, index, options, env, self) : self.renderToken(tokens, index, options);
   };
-  const body = withoutFrontmatter(markdown);
-  const offset = markdown.slice(0, markdown.length - body.length).split("\n").length - 1;
+  md.core.ruler.push("source_positions", state => {
+    for (const token of state.tokens) {
+      if (token.map && ["heading_open", "paragraph_open", "list_item_open", "table_open", "hr"].includes(token.type) && !token.hidden) {
+        token.attrSet("data-source-start", String(token.map[0] + offset + 1));
+        token.attrSet("data-source-end", String(token.map[1] + offset + 1));
+      }
+    }
+  });
   md.renderer.rules.heading_open = (tokens, index, options, _env, self) => {
     tokens[index].attrSet("data-line", String((tokens[index].map?.[0] ?? 0) + offset + 1));
     tokens[index].attrSet("tabindex", "-1");
