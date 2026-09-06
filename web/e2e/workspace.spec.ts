@@ -6,7 +6,8 @@ async function replaceDraft(page: Page, text: string) {
   await page.locator(".cm-content").click();
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.insertText(text);
-  await expect(page.locator(".cm-content")).toHaveText(text);
+  if (!text.includes("\n")) await expect(page.locator(".cm-content")).toHaveText(text);
+  else await expect(page.locator(".save-state")).toContainText("Unsaved");
 }
 
 async function workspace(page: Page, mobile: boolean) {
@@ -162,4 +163,71 @@ test("out-of-order file requests cannot replace the latest selection", async ({ 
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await expect(page.locator("header strong")).toHaveText("A.md");
   await expect(page.locator(".cm-content")).toContainText("Original note.");
+});
+
+test("split preview updates unsaved drafts, preserves scroll, and resizes without resetting the editor", async ({ page }, info) => {
+  test.skip(info.project.name.startsWith("mobile"), "Split view is a desktop layout");
+  const state = await workspace(page, false);
+  const original = state.files.get("A.md")!.content;
+  await page.getByRole("button", { name: "Split", exact: true }).click();
+  await expect(page.locator(".context-panel")).toHaveCount(0);
+  await expect(page.locator(".cm-content")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Alpha", exact: true })).toBeVisible();
+  await page.locator(".cm-content").evaluate(element => { element.dataset.identity = "same-editor"; });
+  const divider = page.getByRole("separator", { name: "Resize editor and preview" });
+  await divider.focus(); await page.keyboard.press("ArrowRight");
+  await expect(divider).toHaveAttribute("aria-valuenow", "52");
+  await expect(page.locator(".cm-content")).toHaveAttribute("data-identity", "same-editor");
+  await replaceDraft(page, original + "\nUNSAVED LIVE UPDATE\n");
+  await expect(page.locator(".preview")).toContainText("UNSAVED LIVE UPDATE");
+  expect(state.files.get("A.md")!.content).toBe(original);
+  const scrollTop = await page.locator(".preview").evaluate(element => { element.scrollTop = 240; return element.scrollTop; });
+  await page.locator(".cm-content").press("ControlOrMeta+End");
+  await page.keyboard.insertText("Another draft update");
+  await expect(page.locator(".preview")).toContainText("Another draft update");
+  expect(await page.locator(".preview").evaluate(element => element.scrollTop)).toBe(scrollTop);
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(page.locator(".cm-content")).toHaveAttribute("data-identity", "same-editor");
+  await page.getByRole("button", { name: "Split", exact: true }).click();
+  await expect(page.locator(".preview")).toContainText("Another draft update");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("button", { name: "Split", exact: true })).toHaveCount(0);
+  await expect(page.locator(".cm-content")).toBeVisible();
+  await expect(page.locator(".cm-content")).toHaveAttribute("data-identity", "same-editor");
+});
+
+test("preview copies only the selected code block, preserving whitespace and special characters", async ({ page }, info) => {
+  const mobile = info.project.name.startsWith("mobile");
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { (window as unknown as { copied: string }).copied = text; } } });
+  });
+  await workspace(page, mobile);
+  const code = 'const value = "<tag>&中文";\n  console.log(value);\n';
+  await replaceDraft(page, '# Code\n\n```js\n' + code + '```\n\n    second block\n');
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  const first = page.locator(".code-block").first();
+  const copy = first.getByRole("button", { name: "Copy code", exact: true });
+  if (!mobile) { await expect(copy).toHaveCSS("opacity", "0"); await first.hover(); }
+  await expect(copy).toHaveCSS("opacity", "1");
+  await copy.click();
+  await expect(first.getByRole("button", { name: "Code copied", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { copied: string }).copied)).toBe(code);
+  const second = page.locator(".code-block").nth(1);
+  if (!mobile) await second.hover();
+  await second.getByRole("button", { name: "Copy code", exact: true }).click();
+  expect(await page.evaluate(() => (window as unknown as { copied: string }).copied)).toBe("second block\n");
+});
+
+test("copy failures show actionable feedback rather than reporting success", async ({ page }, info) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("denied"); } } });
+    document.execCommand = () => false;
+  });
+  await workspace(page, info.project.name.startsWith("mobile"));
+  await replaceDraft(page, '```\ncopy me\n```');
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  const button = page.getByRole("button", { name: "Copy code", exact: true });
+  await button.focus(); await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Copy failed. Select the code and copy manually.", exact: true })).toBeVisible();
+  await expect(page.locator(".clipboard-buffer")).toHaveCount(0);
 });

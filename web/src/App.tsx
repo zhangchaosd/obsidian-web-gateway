@@ -3,7 +3,10 @@ import {
   ApiError, api, clearSession, login, q, restoreSession,
   type Backlink, type SearchResult, type SystemInfo, type TreeEntry, type VaultFile
 } from "./api";
-import { getOutline, renderMarkdown } from "./markdown";
+import { getOutline } from "./markdown";
+
+import MarkdownPreview from "./MarkdownPreview";
+import SplitDivider, { splitStyle } from "./SplitDivider";
 
 const MarkdownEditor = lazy(() => import("./MarkdownEditor"));
 
@@ -16,7 +19,7 @@ type DocumentState = VaultFile & {
 type WorkspaceTab = {
   id: number;
   document: DocumentState | null;
-  mode: "edit" | "preview";
+  mode: "edit" | "preview" | "split";
   backlinks: Backlink[];
   showDiff: boolean;
 };
@@ -70,7 +73,15 @@ export default function App() {
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0];
   const document = activeTab.document;
-  const mode = activeTab.mode;
+  const [compact, setCompact] = useState(() => window.innerWidth <= 760);
+  const [splitRatio, setSplitRatio] = useState(50);
+  useEffect(() => {
+    const media = matchMedia("(max-width: 760px)");
+    const update = () => setCompact(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  const mode = compact && activeTab.mode === "split" ? "edit" : activeTab.mode;
   const backlinks = activeTab.backlinks;
   const showDiff = activeTab.showDiff;
 
@@ -85,7 +96,8 @@ export default function App() {
     updateTab(tabId, tab => ({ ...tab, document: typeof update === "function" ? update(tab.document) : update }));
   }, [updateTab]);
 
-  const setMode = useCallback((mode: "edit" | "preview") => {
+  const setMode = useCallback((mode: "edit" | "preview" | "split") => {
+    if (mode === "split") setRightOpen(false);
     updateTab(activeTabIdRef.current, tab => ({ ...tab, mode }));
   }, [updateTab]);
 
@@ -382,12 +394,11 @@ export default function App() {
     } catch (cause) { setError(messageOf(cause)); }
   };
 
-  const preview = useMemo(() => document ? renderMarkdown(document.content, document.path) : "", [document?.content, document?.path]);
   const outline = useMemo(() => document ? getOutline(document.content) : [], [document?.content]);
   const jumpToHeading = (line: number) => {
     setActiveHeading(line);
-    if (mode === "edit") setJump(value => ({ line, sequence: (value?.sequence ?? 0) + 1 }));
-    else {
+    if (mode !== "preview") setJump(value => ({ line, sequence: (value?.sequence ?? 0) + 1 }));
+    if (mode !== "edit") {
       const target = previewRef.current?.querySelector<HTMLElement>(`[data-line="${line}"]`);
       target?.scrollIntoView({ block: "start", behavior: "instant" });
       target?.focus({ preventScroll: true });
@@ -490,6 +501,7 @@ export default function App() {
         {document && <div className="mode-switch" role="group" aria-label="Document mode">
           <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")} aria-pressed={mode === "edit"}><Icon name="edit" /> Edit</button>
           <button className={mode === "preview" ? "active" : ""} onClick={() => setMode("preview")} aria-pressed={mode === "preview"}><Icon name="preview" /> Preview</button>
+          {!compact && <button className={mode === "split" ? "active" : ""} onClick={() => setMode("split")} aria-pressed={mode === "split"}><Icon name="panel" /> Split</button>}
         </div>}
         <button className={`icon-button ${rightOpen ? "active" : ""}`} onClick={() => { setRightOpen(value => !value); setDrawer(false); }} aria-label="Toggle context panel" aria-pressed={rightOpen}><Icon name="panel" /></button>
         {system.authRequired && <button className="icon-button" onClick={requestSignOut} aria-label="Sign out"><Icon name="external" /></button>}
@@ -527,9 +539,14 @@ export default function App() {
         <div className="document-toolbar">
           <div className={`save-state ${document.dirty ? "dirty" : ""}`}><span role="status">{document.externalChangeDetected ? "Conflict" : status === "Saving" ? "Saving…" : document.dirty ? "● Unsaved" : "✓ Saved"}</span></div>
           <div className="document-stats"><span>{wordCount} words</span><span>{outline.length} headings</span></div>
-          <div className="toolbar-actions"><label className={`toggle-label ${system.features.readOnly ? "hidden" : ""}`}><input disabled={system.features.readOnly} type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); localStorage.setItem("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode === "edit" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); localStorage.setItem("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty || status === "Saving"}><Icon name="save" /> Save</button>}<div className="note-menu"><button className="icon-button" aria-label="Note actions" aria-expanded={menuOpen} onClick={event => { event.stopPropagation(); setMenuOpen(value => !value); }}><Icon name="more" /></button>{menuOpen && <div className="note-menu-popover"><span>Note actions</span>{!system.features.readOnly && <><button onClick={() => openMutation("rename")}><Icon name="edit" /> Rename or move note</button><button className="danger" onClick={() => openMutation("delete")}><Icon name="trash" /> Move note to trash</button></>}<button onClick={() => { setRightOpen(true); setMenuOpen(false); }}><Icon name="panel" /> Outline & backlinks</button></div>}</div></div>
+          <div className="toolbar-actions"><label className={`toggle-label ${system.features.readOnly ? "hidden" : ""}`}><input disabled={system.features.readOnly} type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); localStorage.setItem("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode !== "preview" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); localStorage.setItem("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty || status === "Saving"}><Icon name="save" /> Save</button>}<div className="note-menu"><button className="icon-button" aria-label="Note actions" aria-expanded={menuOpen} onClick={event => { event.stopPropagation(); setMenuOpen(value => !value); }}><Icon name="more" /></button>{menuOpen && <div className="note-menu-popover"><span>Note actions</span>{!system.features.readOnly && <><button onClick={() => openMutation("rename")}><Icon name="edit" /> Rename or move note</button><button className="danger" onClick={() => openMutation("delete")}><Icon name="trash" /> Move note to trash</button></>}<button onClick={() => { setRightOpen(true); setMenuOpen(false); }}><Icon name="panel" /> Outline & backlinks</button></div>}</div></div>
         </div>
-        {showDiff && document.externalContent !== undefined ? <div className="diff-view"><section><h2>Your draft</h2><pre>{document.content}</pre></section><section><h2>Version on disk</h2><pre>{document.externalContent}</pre></section><button onClick={() => setShowDiff(false)}>Close comparison</button></div> : mode === "edit" ? <div className="editor-pane"><Suspense fallback={<div className="editor-loading" role="status">Opening editor…</div>}><MarkdownEditor key={document.path} value={document.content} lineNumbers={lineNumbers} readOnly={system.features.readOnly} jump={jump} onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)} /></Suspense></div> : <article ref={previewRef} className="preview" onClick={event => { const target = (event.target as HTMLElement).closest<HTMLElement>("[data-wiki]")?.dataset.wiki; if (target) void navigateWiki(target); }} dangerouslySetInnerHTML={{ __html: preview }} />}
+        {showDiff && document.externalContent !== undefined ? <div className="diff-view"><section><h2>Your draft</h2><pre>{document.content}</pre></section><section><h2>Version on disk</h2><pre>{document.externalContent}</pre></section><button onClick={() => setShowDiff(false)}>Close comparison</button></div> : <div className={`document-panes ${mode === "split" ? "is-split" : ""}`} style={splitStyle(splitRatio)}>
+          {mode !== "preview" && <div key="editor" className="editor-pane">{mode === "split" && <div className="pane-caption"><Icon name="edit" /> Editor <span>Markdown</span></div>}<Suspense fallback={<div className="editor-loading" role="status">Opening editor…</div>}><MarkdownEditor key={document.path} value={document.content} lineNumbers={lineNumbers} readOnly={system.features.readOnly} jump={jump} onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)} /></Suspense></div>}
+          {mode === "split" && <SplitDivider ratio={splitRatio} onChange={setSplitRatio} />}
+          {mode !== "edit" && <div key="preview" className="preview-pane">{mode === "split" && <div className="pane-caption"><Icon name="preview" /> Preview <span><i /> Live draft</span></div>}<MarkdownPreview key={document.path} content={document.content} path={document.path} articleRef={previewRef} onWiki={target => void navigateWiki(target)} /></div>}
+        </div>}
+
       </> : <EmptyVault vault={system.vault.name} readOnly={system.features.readOnly} onCreate={() => openMutation("file")} />}
     </main>
 

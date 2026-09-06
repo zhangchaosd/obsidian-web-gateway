@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 — 2026-09-06
+
+- Added desktop split view with a resizable editor/preview divider, keyboard resizing, and a double-click reset.
+- Preview follows unsaved drafts after a 200 ms typing pause (500 ms for notes over 100,000 characters), independently of disk saves.
+- Preview updates preserve scroll position; switching between edit and split preserves the editor instance and undo history.
+- Narrow screens fall back to edit/preview switching without losing drafts.
+- Added code-block copy buttons on hover or keyboard focus, always visible on touch devices, with success/error feedback and a clipboard fallback.
+- Added regression coverage for live drafts, resizing, scroll preservation, exact code copying, and clipboard failures.
+
 ## 0.3.0 — 2026-09-06
 
 ### Improved

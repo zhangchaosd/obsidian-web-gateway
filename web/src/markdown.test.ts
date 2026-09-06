@@ -48,3 +48,11 @@ it("keeps outline and preview line anchors aligned, excluding code and metadata"
   expect(html).toContain('data-line="10"');
   expect(html).not.toContain('data-line="7"');
 });
+
+it("adds copy controls to fenced and indented blocks without treating code as HTML", () => {
+  const html = renderMarkdown('```html\n<script>alert(1)</script>\n```\n\n    indented\n', "A.md");
+  const container = document.createElement("div"); container.innerHTML = html;
+  expect(container.querySelectorAll(".code-copy")).toHaveLength(2);
+  expect(container.querySelector("pre code")?.textContent).toBe("<script>alert(1)</script>\n");
+  expect(container.querySelector("script")).toBeNull();
+});

@@ -46,6 +46,11 @@ export function renderMarkdown(markdown: string, sourcePath: string): string {
   const md = new MarkdownIt({ html: false, linkify: true, typographer: false, breaks: true });
   md.use(taskLists, { enabled: false, label: true });
   wikiPlugin(md);
+  for (const rule of ["fence", "code_block"] as const) {
+    const render = md.renderer.rules[rule]!;
+    md.renderer.rules[rule] = (tokens, index, options, env, self) =>
+      `<div class="code-block">${render(tokens, index, options, env, self)}<button type="button" class="code-copy" aria-label="Copy code" title="Copy code"><span class="copy-icon" aria-hidden="true"></span><span class="copy-label" aria-live="polite">Copy</span></button></div>`;
+  }
   const defaultImage = md.renderer.rules.image;
   md.renderer.rules.image = (tokens, index, options, env, self) => {
     const token = tokens[index];
