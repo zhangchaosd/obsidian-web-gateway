@@ -6,5 +6,6 @@ pub mod config;
 pub mod error;
 pub mod index;
 pub mod security;
+pub mod update;
 pub mod vault;
 pub mod websocket;

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ApiError, api, clearSession, login, q, restoreSession,
-  type Backlink, type SearchResult, type SystemInfo, type TreeEntry, type VaultFile
+  ApiError, PasskeyCancelled, api, clearSession, login, passkeyLogin, q, restoreSession,
+  type Backlink, type SearchResult, type SystemInfo, type TreeEntry, type UpdateSettings, type UpdateStatus, type VaultFile
 } from "./api";
 import { getOutline } from "./markdown";
 
@@ -28,7 +28,7 @@ type MutationTarget = { path: string; type: "markdown" | "directory" };
 type MutationDialog = { kind: "file" | "directory" | "rename" | "delete"; value: string; target?: MutationTarget };
 type SavedWorkspace = { tabs: { path: string | null; mode: WorkspaceTab["mode"] }[]; active: number };
 const modKey = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl";
-type IconName = "archive" | "arrow-left" | "book" | "check" | "chevron" | "close" | "document" | "edit" | "external" | "file-plus" | "folder" | "folder-plus" | "info" | "link" | "menu" | "more" | "panel" | "preview" | "save" | "search" | "sparkle" | "trash";
+type IconName = "archive" | "arrow-left" | "book" | "check" | "chevron" | "close" | "document" | "download" | "edit" | "external" | "file-plus" | "folder" | "folder-plus" | "info" | "key" | "link" | "menu" | "more" | "panel" | "preview" | "save" | "search" | "settings" | "sparkle" | "trash";
 
 export default function App() {
   const [tabs, setTabsState] = useState<WorkspaceTab[]>(() => [newWorkspaceTab(1)]);
@@ -65,6 +65,8 @@ export default function App() {
   const [autosave, setAutosave] = useState(() => readStorage("owg-autosave") === "true");
   const [lineNumbers, setLineNumbers] = useState(() => readStorage("owg-line-numbers") !== "false");
   const [folderMenu, setFolderMenu] = useState<string | null>(null);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const workspaceRestored = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -187,6 +189,11 @@ export default function App() {
     for (const tab of restored) if (tab.document) void fetchBacklinks(tab.document.path, tab.id);
   }, [fetchBacklinks, setTabs]);
 
+  useEffect(() => {
+    if (!authenticated) { setUpdateStatus(null); return; }
+    api<UpdateStatus>("/api/v1/update").then(setUpdateStatus).catch(() => { /* Updates are optional. */ });
+  }, [authenticated]);
+
   const workspaceKey = system ? `owg-workspace:${system.vault.name}` : "";
   useEffect(() => {
     if (!authenticated || !workspaceKey || workspaceRestored.current) return;
@@ -277,7 +284,7 @@ export default function App() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
       if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "p" || (event.shiftKey && event.key.toLowerCase() === "f"))) { event.preventDefault(); setDrawer(true); window.setTimeout(() => searchRef.current?.focus(), 0); }
       // The editor consumes Escape for its own panels (search, autocomplete).
-      if (event.key === "Escape" && !event.defaultPrevented) { setFolderMenu(null); setMutationDialog(null); setPendingPath(null); setPendingCloseTab(null); setConfirmation(null); setMenuOpen(false); setDrawer(false); if (window.innerWidth <= 1050) setRightOpen(false); }
+      if (event.key === "Escape" && !event.defaultPrevented) { setUpdatesOpen(false); setFolderMenu(null); setMutationDialog(null); setPendingPath(null); setPendingCloseTab(null); setConfirmation(null); setMenuOpen(false); setDrawer(false); if (window.innerWidth <= 1050) setRightOpen(false); }
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
@@ -566,13 +573,13 @@ export default function App() {
 
   const closingTab = pendingCloseTab === null ? null : tabs.find(tab => tab.id === pendingCloseTab) ?? null;
 
-  const modalKey = pendingPath ? "open" : closingTab ? "close" : mutationDialog ? `mutation-${mutationDialog.kind}` : confirmation ? "confirmation" : "";
+  const modalKey = pendingPath ? "open" : closingTab ? "close" : mutationDialog ? `mutation-${mutationDialog.kind}` : confirmation ? "confirmation" : updatesOpen ? "updates" : "";
   useEffect(() => {
     if (!modalKey) return;
     const previous = window.document.activeElement as HTMLElement | null;
     const dialog = window.document.querySelector<HTMLElement>('[aria-modal="true"]');
     if (!dialog) return;
-    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]'));
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]'));
     const frame = requestAnimationFrame(() => focusable()[0]?.focus());
     const trap = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return;
@@ -585,7 +592,7 @@ export default function App() {
   }, [modalKey]);
 
   if (!system) return <LoadingState error={error} />;
-  if (!authenticated) return <Login vault={system.vault.name} onSuccess={boot} error={error} />;
+  if (!authenticated) return <Login vault={system.vault.name} methods={system.auth ?? { password: true, username: false, passkey: false }} onSuccess={boot} error={error} />;
 
   const openMutation = (kind: MutationDialog["kind"], target?: MutationTarget) => { setError(""); setMenuOpen(false); setFolderMenu(null); setMutationDialog({ kind, target, value: kind === "rename" ? target?.path ?? "" : "" }); };
   const noteTarget: MutationTarget | undefined = document ? { path: document.path, type: "markdown" } : undefined;
@@ -614,7 +621,7 @@ export default function App() {
     </header>
 
     <aside className={`sidebar ${drawer ? "open" : ""}`}>
-      <div className="vault-header"><div className="vault-mark"><Icon name="sparkle" /></div><div><strong>{system.vault.name}</strong><span>{noteCount} notes · local vault</span></div><button className="icon-button mobile-only" onClick={() => setDrawer(false)} aria-label="Close files"><Icon name="close" /></button></div>
+      <div className="vault-header"><div className="vault-mark"><Icon name="sparkle" /></div><div><strong>{system.vault.name}</strong><span>{noteCount} notes · local vault</span></div><button className={`icon-button settings-button ${updateStatus?.available ? "has-update" : ""}`} onClick={() => { setUpdatesOpen(true); setDrawer(false); }} aria-label={updateStatus?.available ? `About and updates, version ${updateStatus.latest?.version} available` : "About and updates"} title={updateStatus?.available ? `Update available: v${updateStatus.latest?.version}` : "About and updates"}><Icon name="settings" /></button><button className="icon-button mobile-only" onClick={() => setDrawer(false)} aria-label="Close files"><Icon name="close" /></button></div>
       <form className="search-box" onSubmit={event => { event.preventDefault(); void runSearch(search); }}>
         <Icon name="search" /><input ref={searchRef} value={search} onChange={event => changeSearch(event.target.value)} placeholder="Search notes" aria-label="Search vault" />
         {search ? <button type="button" onClick={resetSearch} aria-label="Clear search"><Icon name="close" /></button> : <kbd>{modKey} P</kbd>}
@@ -664,6 +671,7 @@ export default function App() {
     {confirmation && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="confirmation-title">{confirmation.title}</h2><p>{confirmation.body}</p><div className="modal-actions"><button onClick={() => setConfirmation(null)}>Cancel</button><button className="danger-button" onClick={() => { confirmation.action(); setConfirmation(null); }}>Continue</button></div></div></div>}
     {pendingPath && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="unsaved-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="unsaved-title">Save your changes?</h2><p>You have an unsaved draft. Choose what to do before opening another note.</p><div className="modal-actions"><button onClick={() => setPendingPath(null)}>Keep editing</button><button onClick={() => { const path = pendingPath; setPendingPath(null); void loadFile(path); }}>Discard</button><button className="primary-button" onClick={async () => { if (await save()) { const path = pendingPath; setPendingPath(null); void loadFile(path); } }}>Save & open</button></div></div></div>}
     {closingTab && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="close-tab-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="close-tab-title">Close with unsaved changes?</h2><p>Save your changes to {closingTab.document ? fileTitle(closingTab.document.path) : "this note"} before closing its tab.</p><div className="modal-actions"><button onClick={() => setPendingCloseTab(null)}>Keep tab</button><button onClick={() => closeTabImmediately(closingTab.id)}>Discard & close</button><button className="primary-button" onClick={async () => { if (await save()) closeTabImmediately(closingTab.id); }}>Save & close</button></div></div></div>}
+    {updatesOpen && <UpdatesDialog status={updateStatus} version={system.version} hasDrafts={tabs.some(tab => tab.document?.dirty)} onStatus={setUpdateStatus} onClose={() => setUpdatesOpen(false)} />}
     {mutationDialog && <MutationModal busy={mutating} error={error} dialog={mutationDialog} onChange={value => setMutationDialog(current => current ? { ...current, value } : null)} onClose={() => setMutationDialog(null)} onSubmit={submitMutation} />}
   </div>;
 }
@@ -729,24 +737,128 @@ function ConnectionNote() {
 function ContextEmpty({ icon, title, body }: { icon: IconName; title: string; body: string }) { return <div className="context-empty"><Icon name={icon} /><strong>{title}</strong><p>{body}</p></div>; }
 function LoadingState({ error }: { error: string }) { return <main className="loading-screen"><div className="vault-mark large"><Icon name="sparkle" /></div><div className="loading-line" /><p>{error || "Opening your vault…"}</p></main>; }
 
-function Login({ vault, onSuccess, error }: { vault: string; onSuccess: () => Promise<void>; error: string }) {
+function Login({ vault, methods, onSuccess, error }: { vault: string; methods: NonNullable<SystemInfo["auth"]>; onSuccess: () => Promise<void>; error: string }) {
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(() => readStorage("owg-remember") === "true");
   const [message, setMessage] = useState(error);
-  const [submitting, setSubmitting] = useState(false);
+  const [submitting, setSubmitting] = useState<"" | "password" | "passkey">("");
+  const changeRemember = (value: boolean) => { setRemember(value); writeStorage("owg-remember", String(value)); };
   const [cooldown, setCooldown] = useState(false);
   useEffect(() => { if (!cooldown) return; const timer = window.setTimeout(() => setCooldown(false), 1000); return () => window.clearTimeout(timer); }, [cooldown]);
   const submit = async (event: React.FormEvent) => {
-    event.preventDefault(); if (submitting || cooldown) return; setMessage(""); setSubmitting(true);
-    try { await login(password); await onSuccess(); }
-    catch (cause) { clearSession(); setMessage(cause instanceof ApiError && cause.status === 401 ? "Incorrect password." : messageOf(cause)); setCooldown(true); }
-    finally { setSubmitting(false); }
+    event.preventDefault(); if (submitting || cooldown) return; setMessage(""); setSubmitting("password");
+    try { await login(methods.username ? username : null, password, remember); await onSuccess(); }
+    catch (cause) { clearSession(); setMessage(cause instanceof ApiError && cause.status === 401 ? methods.username ? "Incorrect username or password." : "Incorrect password." : messageOf(cause)); setCooldown(true); }
+    finally { setSubmitting(""); }
   };
-  return <main className="login-screen"><div className="login-ambient" /><form className="login-card" onSubmit={submit}><div className="vault-mark large"><Icon name="sparkle" /></div><span className="eyebrow">Obsidian Web Gateway</span><h1>Welcome back</h1><p>Sign in to open <strong>{vault}</strong>. Notes stay on the machine running this gateway.</p><label className="field-label">Password<input type="password" autoFocus autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Enter vault password" /></label>{message && <p className="login-error"><Icon name="info" />{message}</p>}<button className="primary-button login-button" type="submit" disabled={submitting || cooldown}>{submitting ? "Opening vault…" : cooldown ? "Try again in a moment" : "Open vault"}</button><ConnectionNote /></form></main>;
+  const signInWithPasskey = async () => {
+    if (submitting || cooldown) return; setMessage(""); setSubmitting("passkey");
+    try { await passkeyLogin(remember); await onSuccess(); }
+    catch (cause) {
+      clearSession();
+      if (cause instanceof PasskeyCancelled) setMessage(cause.message);
+      else { setMessage(cause instanceof ApiError && cause.status === 401 ? "This passkey was not accepted. Use a passkey registered in bookmarkd for this domain." : messageOf(cause)); setCooldown(true); }
+    }
+    finally { setSubmitting(""); }
+  };
+  const busyLabel = cooldown ? "Try again in a moment" : null;
+  return <main className="login-screen"><div className="login-ambient" /><form className="login-card" onSubmit={submit}>
+    <div className="vault-mark large"><Icon name="sparkle" /></div><span className="eyebrow">Obsidian Web Gateway</span><h1>Welcome back</h1>
+    <p>Sign in to open <strong>{vault}</strong>. Notes stay on the machine running this gateway.</p>
+    <label className="remember-option"><input type="checkbox" checked={remember} onChange={event => changeRemember(event.target.checked)} /><span><strong>Keep me signed in for 30 days</strong><small>{remember ? "Stay signed in on this browser, even after restarts. Don’t use on shared computers." : "You’ll be signed out when you close the browser."}</small></span></label>
+    {methods.passkey && <button className="primary-button login-button passkey-button" type="button" onClick={() => void signInWithPasskey()} disabled={!!submitting || cooldown}><Icon name="key" /> {submitting === "passkey" ? "Waiting for your passkey…" : busyLabel ?? "Sign in with a passkey"}</button>}
+    {methods.passkey && methods.password && <div className="login-divider"><span>or use your password</span></div>}
+    {methods.password && <>
+      {methods.username && <label className="field-label">Username<input autoFocus={!methods.passkey} autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={event => setUsername(event.target.value)} placeholder="Enter username" /></label>}
+      <label className="field-label">Password<input type="password" autoFocus={!methods.passkey && !methods.username} autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Enter vault password" /></label>
+    </>}
+    {message && <p className="login-error" role="alert"><Icon name="info" />{message}</p>}
+    {methods.password && <button className={`${methods.passkey ? "secondary-button" : "primary-button"} login-button`} type="submit" disabled={!!submitting || cooldown || !password || (methods.username && !username.trim())}>{submitting === "password" ? "Opening vault…" : busyLabel ?? "Open vault"}</button>}
+    <ConnectionNote />
+  </form></main>;
+}
+
+function UpdatesDialog({ status, version, hasDrafts, onStatus, onClose }: { status: UpdateStatus | null; version: string; hasDrafts: boolean; onStatus: (status: UpdateStatus) => void; onClose: () => void }) {
+  const [draft, setDraft] = useState<UpdateSettings | null>(status?.settings ?? null);
+  const [busy, setBusy] = useState<"" | "check" | "save" | "install">("");
+  const [message, setMessage] = useState("");
+  const [confirmInstall, setConfirmInstall] = useState(false);
+  const [restarting, setRestarting] = useState<string | null>(null);
+  useEffect(() => { if (!draft && status) setDraft(status.settings); }, [status, draft]);
+  const dirty = !!draft && !!status && JSON.stringify(draft) !== JSON.stringify(status.settings);
+  const run = async (kind: "check" | "save", request: () => Promise<UpdateStatus>) => {
+    setBusy(kind); setMessage("");
+    try {
+      const next = await request();
+      onStatus(next);
+      if (kind === "save") { setDraft(next.settings); setMessage("Update settings saved."); }
+      else setMessage(next.error ? "" : next.available ? `Version ${next.latest?.version} is available.` : "You are running the latest version.");
+    } catch (cause) { setMessage(messageOf(cause)); } finally { setBusy(""); }
+  };
+  const install = async () => {
+    const target = status?.latest?.version;
+    if (!target) return;
+    setBusy("install"); setMessage("");
+    try {
+      const result = await api<{ restarting: boolean }>("/api/v1/update/install", { method: "POST", body: JSON.stringify({ version: target }) });
+      if (!result.restarting) { setMessage(`Version ${target} is installed. Restart the gateway to use it.`); setBusy(""); return; }
+      setRestarting(target);
+      // Wait for the restarted gateway to report the new version, then reload into it.
+      const deadline = Date.now() + 90_000;
+      const poll = async () => {
+        try { if ((await api<SystemInfo>("/api/v1/system")).version === target) { window.location.reload(); return; } } catch { /* Restarting. */ }
+        if (Date.now() < deadline) window.setTimeout(() => void poll(), 1500);
+        else { setRestarting(null); setBusy(""); setMessage("The gateway did not come back with the new version. Check the server logs."); }
+      };
+      window.setTimeout(() => void poll(), 1500);
+    } catch (cause) { setMessage(messageOf(cause)); setBusy(""); setConfirmInstall(false); }
+  };
+  const latest = status?.available ? status.latest : null;
+  const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !restarting) onClose(); }}>
+    <div className="modal updates-modal" role="dialog" aria-modal="true" aria-labelledby="updates-title">
+      <div className="modal-icon"><Icon name="settings" /></div>
+      <h2 id="updates-title">About and updates</h2>
+      <div className="update-summary">
+        <span>Version <strong>v{status?.current ?? version}</strong></span>
+        {latest ? <span className="update-badge">v{latest.version} available{latest.prerelease ? " · prerelease" : ""}</span> : status?.checkedAt && !status.error ? <span className="update-current"><Icon name="check" /> Up to date</span> : null}
+      </div>
+      <p className="update-meta">{status?.checkedAt ? `Last checked ${new Date(status.checkedAt * 1000).toLocaleString()}` : "Not checked yet"}</p>
+      {status?.error && <p className="login-error" role="alert"><Icon name="info" />Check failed: {status.error}</p>}
+      {latest && <div className="release-notes"><div><strong>What’s new in v{latest.version}</strong><a href={latest.url} target="_blank" rel="noreferrer">Release page <Icon name="external" /></a></div><pre>{latest.notes || "No release notes."}</pre></div>}
+      {restarting ? <p className="update-restarting" role="status"><span className="loading-line" />Installing v{restarting} and restarting. This page reloads automatically when the new version is ready.</p> : <>
+        {latest && !status?.installable && <p className="update-meta">Automatic installation is not available on this platform{status?.platform ? ` (${status.platform})` : ""}. Download the release manually.</p>}
+        {latest && status?.installable && hasDrafts && <p className="update-meta">Save your open drafts before installing; the gateway restarts during the update.</p>}
+        {latest && status?.installable && confirmInstall && <p className="update-confirm">The gateway downloads v{latest.version}, verifies its checksum, replaces the current program, and restarts. The previous version is kept for rollback.</p>}
+        <div className="modal-actions update-actions">
+          <button type="button" onClick={() => void run("check", () => api<UpdateStatus>("/api/v1/update/check", { method: "POST" }))} disabled={!!busy}>{busy === "check" ? "Checking…" : "Check for updates"}</button>
+          {latest && (status?.installable
+            ? confirmInstall
+              ? <button type="button" className="primary-button" onClick={() => void install()} disabled={!!busy || hasDrafts}><Icon name="download" /> {busy === "install" ? "Installing…" : `Install v${latest.version} and restart`}</button>
+              : <button type="button" className="primary-button" onClick={() => setConfirmInstall(true)} disabled={!!busy || hasDrafts}><Icon name="download" /> Update to v{latest.version}</button>
+            : <a className="primary-button" href={latest.url} target="_blank" rel="noreferrer"><Icon name="download" /> Download v{latest.version}</a>)}
+        </div>
+        {draft && <fieldset className="update-settings" disabled={!!busy}>
+          <legend>Automatic checks</legend>
+          <div className="update-fields">
+            <label className="field-label">Frequency<select value={draft.schedule} onChange={event => setDraft({ ...draft, schedule: event.target.value as UpdateSettings["schedule"] })}><option value="off">Off</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label>
+            {draft.schedule === "weekly" && <label className="field-label">Day<select value={draft.weekday} onChange={event => setDraft({ ...draft, weekday: Number(event.target.value) })}>{weekdays.map((day, index) => <option key={day} value={index + 1}>{day}</option>)}</select></label>}
+            {draft.schedule !== "off" && <label className="field-label">Time<input type="time" value={draft.time} onChange={event => setDraft({ ...draft, time: event.target.value })} /></label>}
+            <label className="field-label">Channel<select value={draft.channel} onChange={event => setDraft({ ...draft, channel: event.target.value as UpdateSettings["channel"] })}><option value="stable">Stable releases</option><option value="prerelease">Include prereleases</option></select></label>
+          </div>
+          <p className="update-meta">Checks only report new versions; installing always needs your confirmation. Times use the server’s clock.</p>
+        </fieldset>}
+        {message && <p className="update-message" role="status">{message}</p>}
+        <div className="modal-actions"><button type="button" onClick={onClose}>Close</button>{dirty && <button type="button" className="primary-button" onClick={() => void run("save", () => api<UpdateStatus>("/api/v1/update/settings", { method: "PATCH", body: JSON.stringify(draft) }))} disabled={!!busy}>{busy === "save" ? "Saving…" : "Save settings"}</button>}</div>
+      </>}
+    </div>
+  </div>;
 }
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, React.ReactNode> = {
-    archive: <><rect x="4" y="5" width="16" height="4" rx="1"/><path d="M6 9v10h12V9M10 13h4"/></>, "arrow-left": <><path d="m15 18-6-6 6-6"/><path d="M9 12h10"/></>, book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></>, check: <path d="m5 12 4 4L19 6"/>, chevron: <path d="m9 18 6-6-6-6"/>, close: <><path d="m6 6 12 12"/><path d="M18 6 6 18"/></>, document: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></>, edit: <><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></>, external: <><path d="M10 17l5-5-5-5"/><path d="M15 12H3M21 19V5a2 2 0 0 0-2-2h-6"/></>, "file-plus": <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/></>, folder: <path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>, "folder-plus": <><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 11v6M9 14h6"/></>, info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></>, link: <><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1-1"/></>, menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>, more: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>, panel: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></>, preview: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></>, save: <><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></>, search: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></>, sparkle: <path d="m12 2 1.7 5.3L19 9l-5.3 1.7L12 16l-1.7-5.3L5 9l5.3-1.7ZM5 16l.8 2.2L8 19l-2.2.8L5 22l-.8-2.2L2 19l2.2-.8Z"/>, trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/></>
+    archive: <><rect x="4" y="5" width="16" height="4" rx="1"/><path d="M6 9v10h12V9M10 13h4"/></>, "arrow-left": <><path d="m15 18-6-6 6-6"/><path d="M9 12h10"/></>, book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></>, check: <path d="m5 12 4 4L19 6"/>, chevron: <path d="m9 18 6-6-6-6"/>, close: <><path d="m6 6 12 12"/><path d="M18 6 6 18"/></>, document: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></>, download: <><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></>, key: <><circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 9-9M16 7l3 3M14 9l2 2"/></>, settings: <><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></>, edit: <><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></>, external: <><path d="M10 17l5-5-5-5"/><path d="M15 12H3M21 19V5a2 2 0 0 0-2-2h-6"/></>, "file-plus": <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/></>, folder: <path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>, "folder-plus": <><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 11v6M9 14h6"/></>, info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></>, link: <><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1-1"/></>, menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>, more: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>, panel: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></>, preview: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></>, save: <><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></>, search: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></>, sparkle: <path d="m12 2 1.7 5.3L19 9l-5.3 1.7L12 16l-1.7-5.3L5 9l5.3-1.7ZM5 16l.8 2.2L8 19l-2.2.8L5 22l-.8-2.2L2 19l2.2-.8Z"/>, trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/></>
   };
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }

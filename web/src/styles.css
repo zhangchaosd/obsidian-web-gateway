@@ -89,6 +89,31 @@ kbd { flex: none; border: 1px solid var(--line); border-radius: 4px; background:
 .tree .dragging { opacity: .4; }
 .tree [draggable="true"] { cursor: grab; }
 .active-pip { width: 4px; height: 4px; flex: none; border-radius: 50%; background: var(--accent); }
+.settings-button { position: relative; width: 32px; height: 32px; }
+.settings-button .icon { width: 16px; }
+.settings-button.has-update::after { content: ""; width: 7px; height: 7px; position: absolute; top: 6px; right: 6px; border: 2px solid var(--panel); border-radius: 50%; background: var(--accent); }
+.updates-modal { width: min(520px, 100%); }
+.update-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--muted-strong); font-size: 13px; }
+.update-summary strong { color: var(--text); }
+.update-badge { border-radius: 99px; background: var(--accent-soft); color: var(--accent-ink); padding: 3px 9px; font-size: 11px; font-weight: 600; }
+.update-current { display: inline-flex; align-items: center; gap: 4px; color: var(--success); font-size: 12px; }
+.update-current .icon { width: 14px; }
+.update-meta, .update-message, .update-confirm { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.update-message { color: var(--muted-strong); }
+.update-confirm { border-radius: 8px; background: var(--warning-soft); color: var(--warning); padding: 10px 12px; }
+.release-notes { margin-top: 16px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.release-notes > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.release-notes a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent-ink); text-decoration: none; }
+.release-notes a .icon { width: 13px; }
+.release-notes pre { max-height: 180px; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; word-break: break-word; color: var(--muted-strong); font: 12px/1.6 var(--mono); }
+.modal-actions.update-actions { justify-content: flex-start; margin-top: 18px; }
+.update-settings { margin: 22px 0 0; border: 0; border-top: 1px solid var(--line-soft); padding: 18px 0 0; }
+.update-settings legend { padding: 0; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+.update-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-top: 12px; }
+.update-fields .field-label + .field-label { margin-top: 0; }
+.update-fields input { height: 40px; font-size: 13px; }
+.update-restarting { display: flex; flex-direction: column; gap: 14px; margin: 20px 0 0; color: var(--muted-strong); font-size: 13px; line-height: 1.6; }
+.update-restarting .loading-line { margin: 0; }
 .file-actions { display: flex; gap: 8px; flex: none; padding: 16px 14px; border-top: 1px solid var(--line); }
 .file-actions > button:first-child { height: 38px; display: flex; align-items: center; justify-content: center; gap: 7px; flex: 1; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 12px; font-weight: 600; }
 .file-actions > button:first-child:hover { border-color: var(--accent); color: var(--accent-ink); }
@@ -240,6 +265,10 @@ kbd { flex: none; border: 1px solid var(--line); border-radius: 4px; background:
 .field-label { display: flex; flex-direction: column; gap: 8px; color: var(--muted-strong); font-size: 12px; font-weight: 500; }
 .field-label input { width: 100%; height: 44px; border: 1px solid var(--line); border-radius: 8px; outline: 0; background: var(--surface); color: var(--text); padding: 0 12px; font-size: 14px; }
 .field-label input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent); }
+.field-label + .field-label { margin-top: 14px; }
+.field-label select { width: 100%; height: 40px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); padding: 0 10px; font: inherit; font-size: 13px; }
+.field-label select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+a.primary-button, a.secondary-button { text-decoration: none; }
 .modal-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
 .modal-actions > button:not(.primary-button):not(.danger-button) { min-height: 36px; border: 1px solid var(--line); border-radius: 7px; background: var(--raised); padding: 8px 12px; font-size: 12px; }
 .loading-screen, .login-screen { height: 100%; display: grid; place-content: center; position: relative; overflow: hidden; background: var(--panel); color: var(--text); }
@@ -255,6 +284,16 @@ kbd { flex: none; border: 1px solid var(--line); border-radius: 4px; background:
 .login-card h1 { margin: 0; font: 500 34px/1.15 var(--serif); overflow-wrap: anywhere; letter-spacing: -.025em; }
 .login-card > p { margin: 14px 0 28px; color: var(--muted-strong); font-size: 13px; line-height: 1.7; }
 .login-button { width: 100%; height: 44px; margin-top: 18px; }
+.passkey-button { margin-top: 0; }
+.remember-option { display: flex; align-items: flex-start; gap: 10px; margin: -8px 0 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 11px 12px; cursor: pointer; }
+.remember-option input { width: 16px; height: 16px; flex: none; margin: 1px 0 0; accent-color: var(--accent); }
+.remember-option > span { display: flex; flex-direction: column; gap: 3px; }
+.remember-option strong { color: var(--text); font-size: 12px; font-weight: 600; }
+.remember-option small { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.remember-option:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--accent-soft); }
+.passkey-button .icon { width: 16px; }
+.login-divider { display: flex; align-items: center; gap: 12px; margin: 22px 0 18px; color: var(--muted); font-size: 11px; }
+.login-divider::before, .login-divider::after { content: ""; height: 1px; flex: 1; background: var(--line); }
 .login-error { display: flex; align-items: center; gap: 7px; color: var(--danger) !important; }
 .login-error .icon { width: 14px; }
 .login-card .sync-dot.online { background: var(--success); }

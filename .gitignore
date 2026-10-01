@@ -9,3 +9,4 @@
 /web/playwright-report/
 /tmp/
 .DS_Store
+/web/.e2e-passkey/

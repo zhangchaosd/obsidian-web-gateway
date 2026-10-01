@@ -2,13 +2,26 @@
 
 use std::process::ExitCode;
 
-use obsidian_web::{app, config::Config};
+use obsidian_web::{
+    app,
+    config::{Config, Launch},
+    update,
+};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let config = match Config::load() {
-        Ok(config) => config,
+        Ok(Launch::Serve(config)) => *config,
+        Ok(Launch::Update { command, data_dir }) => {
+            return match update::run_command(command, &data_dir) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("update failed: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Err(error) => {
             eprintln!("configuration error: {error}");
             return ExitCode::FAILURE;

@@ -20,8 +20,10 @@ use crate::{
     security::{
         auth::{AuthStore, require_auth},
         origin::local_origin_guard,
+        passkey::PasskeyAuth,
         sandbox::VaultSandbox,
     },
+    update::Updater,
     vault::{
         VaultService,
         watcher::{self, WatchHandle},
@@ -35,6 +37,7 @@ pub struct AppState {
     pub index: Arc<RwLock<VaultIndex>>,
     pub events: broadcast::Sender<GatewayEvent>,
     pub auth: AuthStore,
+    pub updater: Arc<Updater>,
 }
 
 #[derive(Embed)]
@@ -45,21 +48,61 @@ pub async fn run(config: Config) -> AppResult<()> {
     let sandbox = VaultSandbox::new(&config.vault, config.show_hidden_files)?;
     let vault_name = sandbox.vault_name();
     let (index, stats) = VaultIndex::build(&sandbox)?;
+    let passkey = match (&config.passkey_db, &config.public_url) {
+        (Some(path), Some(origin)) if config.auth_enabled => {
+            let user_name = config.username.as_deref().unwrap_or("owner");
+            let passkey = PasskeyAuth::open(path, origin, user_name)?;
+            let credentials = passkey.credential_count()?;
+            tracing::info!(rp_id = passkey.rp_id(), origin = %origin, credentials, "passkey login enabled");
+            if credentials == 0 {
+                tracing::warn!("the passkey database has no registered passkeys");
+            }
+            Some(passkey)
+        }
+        _ => None,
+    };
+    let passkey_rp_id = passkey.as_ref().map(|passkey| passkey.rp_id().to_owned());
+    if config.auth_enabled && config.password.is_some() && config.username.is_none() {
+        tracing::warn!("password login has no username; set --username or OBSIDIAN_WEB_USERNAME");
+    }
     let auth = AuthStore::new(
         config.auth_enabled,
         config.password.as_deref(),
         config.secure_cookie,
     )?
-    .with_trusted_proxies(config.trusted_proxies.clone());
+    .with_trusted_proxies(config.trusted_proxies.clone())
+    .with_username(config.username.clone())
+    .with_passkey(passkey)
+    // Sessions survive restarts and updates until the login settings change.
+    .with_session_file(
+        &config.data_dir.join("sessions.json"),
+        &format!(
+            "v1\0{}\0{}\0{}",
+            config.username.as_deref().unwrap_or_default(),
+            config.password.as_deref().unwrap_or_default(),
+            passkey_rp_id.as_deref().unwrap_or_default()
+        ),
+    )?;
     let vault = VaultService::new(sandbox, config.read_only, config.markdown_limit);
     let index = Arc::new(RwLock::new(index));
     let (events, _) = broadcast::channel(512);
+    let updater = Arc::new(Updater::new(&config.data_dir));
     let state = AppState {
         vault: vault.clone(),
         index: index.clone(),
         events: events.clone(),
         auth,
+        updater: updater.clone(),
     };
+    // Scheduled update checks only record what is available; installing is always explicit.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let updater = updater.clone();
+            let _ = tokio::task::spawn_blocking(move || updater.tick()).await;
+        }
+    });
     let _watcher: WatchHandle = watcher::start(vault.sandbox().clone(), index, events)?;
     let router = router(state);
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
@@ -91,6 +134,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/resolve", get(api::resolve))
         .route("/api/v1/backlinks", get(api::backlinks))
         .route("/api/v1/ws", get(websocket::ws_handler))
+        .route("/api/v1/update", get(api::update_status))
+        .route("/api/v1/update/settings", patch(api::update_settings))
+        .route("/api/v1/update/check", post(api::update_check))
+        .route("/api/v1/update/install", post(api::update_install))
         .route_layer(middleware::from_fn_with_state(
             state.auth.clone(),
             require_auth,
@@ -100,6 +147,8 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(api::health))
         .route("/api/v1/system", get(api::system))
         .route("/api/v1/auth/login", post(api::login))
+        .route("/api/v1/auth/passkey/begin", post(api::passkey_begin))
+        .route("/api/v1/auth/passkey/finish", post(api::passkey_finish))
         .merge(protected)
         .fallback(static_handler)
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
@@ -171,11 +220,15 @@ async fn shutdown_signal() {
 pub fn state_for_tests(vault: VaultService, auth: AuthStore) -> AppResult<AppState> {
     let (index, _) = VaultIndex::build(vault.sandbox())?;
     let (events, _) = broadcast::channel(16);
+    let updater = Arc::new(Updater::new(
+        &std::env::temp_dir().join(format!("obsidian-web-test-{}", uuid::Uuid::new_v4())),
+    ));
     Ok(AppState {
         vault,
         index: Arc::new(RwLock::new(index)),
         events,
         auth,
+        updater,
     })
 }
 

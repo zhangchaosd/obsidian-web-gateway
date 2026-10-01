@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-01
 
+- Passkey login compatible with bookmarkd: point `--passkey-db` at a copy of bookmarkd's `auth.db` (or the shared file) and set `--public-url`; passkeys registered for the shared RP ID sign in without re-registration. Verification uses bookmarkd's own `bookmarkd-auth` crate.
+- **Keep me signed in for 30 days** on the login page (password and passkey). Without it, sessions end with the browser and expire after 12 hours. Sessions are now stored as token hashes in `--data-dir`, so restarts and updates no longer sign users out; changing the login settings or revoking a passkey ends the affected sessions.
+- Optional `--username` / `OBSIDIAN_WEB_USERNAME`; when set, the login page asks for a username and password. Without it the login page is unchanged.
+- In-app updates: check GitHub Releases manually or on a daily/weekly schedule, read release notes, and install with checksum and version verification, in-place restart, and `obsidian-web update check|install|rollback` on the command line.
 - Security: with `--no-auth`, only `localhost`, `*.localhost`, and IP-literal `Host` headers are accepted, and a browser `Origin` must match, blocking DNS-rebinding access to the Vault.
 - Renaming a note keeps its `.md` extension; case-only renames now work on case-insensitive filesystems; folders cannot be moved inside themselves.
 - Folders can be renamed, moved, and moved to trash from a menu in the sidebar.

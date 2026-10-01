@@ -16,6 +16,8 @@ use crate::{
     app::AppState,
     error::{AppError, AppResult},
     index::{BacklinksResponse, ResolveResponse, SearchResponse, VaultIndex},
+    security::auth::{LoginResult, cookie_value, random_token},
+    update,
     vault::models::*,
     websocket::GatewayEvent,
 };
@@ -27,6 +29,15 @@ pub struct SystemResponse {
     vault: VaultInfo,
     features: FeatureInfo,
     auth_required: bool,
+    auth: AuthMethods,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthMethods {
+    password: bool,
+    username: bool,
+    passkey: bool,
 }
 
 #[derive(Serialize)]
@@ -54,6 +65,11 @@ pub async fn system(State(state): State<AppState>) -> Json<SystemResponse> {
             backlinks: true,
         },
         auth_required: state.auth.enabled(),
+        auth: AuthMethods {
+            password: state.auth.password_enabled(),
+            username: state.auth.username_required(),
+            passkey: state.auth.passkey().is_some(),
+        },
     })
 }
 
@@ -63,7 +79,11 @@ pub async fn health() -> &'static str {
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
+    #[serde(default)]
+    username: Option<String>,
     password: String,
+    #[serde(default)]
+    remember: bool,
 }
 
 #[derive(Serialize)]
@@ -79,21 +99,101 @@ pub async fn login(
     Json(request): Json<LoginRequest>,
 ) -> AppResult<Response> {
     let store = state.auth.clone();
-    let password = request.password;
     let client = store.client_key(connect.0.ip(), &headers);
-    let result = tokio::task::spawn_blocking(move || store.login(&password, &client)).await??;
+    let result = tokio::task::spawn_blocking(move || {
+        store.login(
+            request.username.as_deref(),
+            &request.password,
+            request.remember,
+            &client,
+        )
+    })
+    .await??;
+    session_response(result)
+}
+
+fn session_response(result: LoginResult) -> AppResult<Response> {
     let mut response = Json(LoginResponse {
         csrf_token: result.csrf,
     })
     .into_response();
     if !result.cookie.is_empty() {
-        response.headers_mut().insert(
+        response.headers_mut().append(
             header::SET_COOKIE,
             HeaderValue::from_str(&result.cookie)
                 .map_err(|_| AppError::Internal("invalid session cookie".into()))?,
         );
     }
     Ok(response)
+}
+
+/// Random per-browser value tying a passkey ceremony to the browser that started it.
+const PASSKEY_BINDING_COOKIE: &str = "owg_passkey";
+
+pub async fn passkey_begin(
+    State(state): State<AppState>,
+    connect: axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let passkey = state.auth.passkey().ok_or(AppError::NotFound)?;
+    let client = state.auth.client_key(connect.0.ip(), &headers);
+    let binding = cookie_value(&headers, PASSKEY_BINDING_COOKIE)
+        .filter(|value| value.len() == 43)
+        .map_or_else(random_token, str::to_owned);
+    let auth = state.auth.clone();
+    let options = tokio::task::spawn_blocking(move || {
+        auth.begin_attempt(&client)?;
+        // Starting a ceremony is not a failure; release the slot immediately.
+        auth.end_attempt(&client, true)?;
+        passkey.begin(&binding).map(|options| (options, binding))
+    })
+    .await??;
+    let (options, binding) = options;
+    let mut response = Json(options).into_response();
+    let secure = if state.auth.secure_cookie() {
+        "; Secure"
+    } else {
+        ""
+    };
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&format!(
+            "{PASSKEY_BINDING_COOKIE}={binding}; Path=/api/v1/auth/passkey; HttpOnly; SameSite=Strict; Max-Age=600{secure}"
+        ))
+        .map_err(|_| AppError::Internal("invalid passkey cookie".into()))?,
+    );
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyFinishRequest {
+    ceremony_id: String,
+    credential: serde_json::Value,
+    #[serde(default)]
+    remember: bool,
+}
+
+pub async fn passkey_finish(
+    State(state): State<AppState>,
+    connect: axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<PasskeyFinishRequest>,
+) -> AppResult<Response> {
+    let passkey = state.auth.passkey().ok_or(AppError::NotFound)?;
+    let client = state.auth.client_key(connect.0.ip(), &headers);
+    let binding = cookie_value(&headers, PASSKEY_BINDING_COOKIE)
+        .unwrap_or_default()
+        .to_owned();
+    let auth = state.auth.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        auth.begin_attempt(&client)?;
+        let verified = passkey.finish(&request.ceremony_id, &binding, request.credential);
+        auth.end_attempt(&client, verified.is_ok())?;
+        auth.issue_session(request.remember, Some(verified?))
+    })
+    .await??;
+    session_response(result)
 }
 
 pub async fn auth_session(
@@ -311,6 +411,65 @@ fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
             Some(end.parse().ok()?)
         },
     ))
+}
+
+pub async fn update_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(state.updater.status())
+}
+
+pub async fn update_settings(
+    State(state): State<AppState>,
+    Json(settings): Json<update::Settings>,
+) -> AppResult<Json<serde_json::Value>> {
+    let updater = state.updater.clone();
+    tokio::task::spawn_blocking(move || updater.save_settings(settings)).await??;
+    Ok(Json(state.updater.status()))
+}
+
+pub async fn update_check(State(state): State<AppState>) -> AppResult<Json<serde_json::Value>> {
+    let updater = state.updater.clone();
+    let recently = updater.last_checked().is_some_and(|checked| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .is_ok_and(|now| now.as_secs() as i64 - checked < 10)
+    });
+    if recently {
+        return Err(AppError::InvalidRequest(
+            "updates were checked moments ago; try again in a few seconds".into(),
+        ));
+    }
+    // A failed check is recorded in the status, which the UI shows.
+    let _ = tokio::task::spawn_blocking(move || updater.check()).await?;
+    Ok(Json(state.updater.status()))
+}
+
+#[derive(Deserialize)]
+pub struct InstallRequest {
+    version: String,
+}
+
+pub async fn update_install(
+    State(state): State<AppState>,
+    Json(request): Json<InstallRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let updater = state.updater.clone();
+    let installed =
+        tokio::task::spawn_blocking(move || updater.install(&request.version)).await??;
+    tracing::info!(version = %installed.version, "update installed; restarting");
+    #[cfg(unix)]
+    {
+        // Let this response reach the browser before the process image is replaced.
+        let executable = installed.executable.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            update::reexec(&executable)
+        });
+    }
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "version": installed.version,
+        "restarting": cfg!(unix),
+    })))
 }
 
 pub type SharedIndex = Arc<RwLock<VaultIndex>>;

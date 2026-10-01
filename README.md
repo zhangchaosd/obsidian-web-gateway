@@ -33,14 +33,14 @@ cd web
 npm ci
 npm run build
 cd ..
-OBSIDIAN_WEB_PASSWORD='choose-a-long-password' cargo run --release -- \
+OBSIDIAN_WEB_USERNAME='me' OBSIDIAN_WEB_PASSWORD='choose-a-long-password' cargo run --release -- \
   --vault ./demo-vault \
   --listen 127.0.0.1:8765
 ```
 
 Open <http://127.0.0.1:8765>. A release binary includes the frontend and does not require Node.js.
 
-Authentication is enabled by default. Set `OBSIDIAN_WEB_PASSWORD` or pass `--password`. `--no-auth` is intended only for trusted localhost use; in that mode OWG accepts only `localhost`, `*.localhost`, or IP-address `Host` headers to block DNS rebinding. OWG never writes the password to a config file.
+Authentication is enabled by default. Set `OBSIDIAN_WEB_PASSWORD` or pass `--password`, and set `OBSIDIAN_WEB_USERNAME` or `--username` to also require a username on the login page (without one, the page asks only for the password, as in earlier versions). Passkeys can be used instead of or alongside the password; see [Passkey login](#passkey-login-shared-with-bookmarkd). `--no-auth` is intended only for trusted localhost use; in that mode OWG accepts only `localhost`, `*.localhost`, or IP-address `Host` headers to block DNS rebinding. OWG never writes the password to a config file.
 
 ## CLI
 
@@ -51,10 +51,16 @@ obsidian-web --vault <PATH>
   --log-level <LEVEL>      default: info
   --read-only              enforce read-only mode server-side
   --show-hidden-files      show non-reserved dotfiles
+  --username <NAME>        username required with the password
   --password <PASSWORD>    preferably use OBSIDIAN_WEB_PASSWORD
+  --passkey-db <PATH>      passkey database copied from bookmarkd
+  --public-url <URL>       exact browser-facing origin; required for passkeys
+  --data-dir <PATH>        state such as update settings (default: platform data dir)
   --no-auth                disable login
   --secure-cookie          mark session cookies Secure behind HTTPS
   --trusted-proxy <CIDR>   trust X-Forwarded-For only from this proxy; repeatable
+
+obsidian-web update check | install --yes | rollback --yes
 ```
 
 The server listens only on loopback by default. LAN/public binding must be explicit.
@@ -70,10 +76,14 @@ path = "/Users/user/Documents/MyVault"
 [server]
 listen = "127.0.0.1:8765"
 trusted_proxies = ["127.0.0.1/32", "::1/128"]
+public_url = "https://obsidian.example.com"
+# data_dir = "/var/lib/obsidian-web"
 
 [auth]
 enabled = true
 secure_cookie = false
+username = "me"
+passkey_db = "/srv/obsidian-web/auth.db"
 
 [features]
 read_only = false
@@ -83,7 +93,7 @@ show_hidden_files = false
 level = "info"
 ```
 
-Supported environment variables are `OBSIDIAN_WEB_VAULT`, `OBSIDIAN_WEB_LISTEN`, `OBSIDIAN_WEB_PASSWORD`, `OBSIDIAN_WEB_AUTH_ENABLED`, `OBSIDIAN_WEB_READ_ONLY`, `OBSIDIAN_WEB_LOG_LEVEL`, and `OBSIDIAN_WEB_TRUSTED_PROXIES` (comma-separated IPs or CIDRs).
+Supported environment variables are `OBSIDIAN_WEB_VAULT`, `OBSIDIAN_WEB_LISTEN`, `OBSIDIAN_WEB_USERNAME`, `OBSIDIAN_WEB_PASSWORD`, `OBSIDIAN_WEB_PASSKEY_DB`, `OBSIDIAN_WEB_PUBLIC_URL`, `OBSIDIAN_WEB_DATA_DIR`, `OBSIDIAN_WEB_AUTH_ENABLED`, `OBSIDIAN_WEB_READ_ONLY`, `OBSIDIAN_WEB_LOG_LEVEL`, and `OBSIDIAN_WEB_TRUSTED_PROXIES` (comma-separated IPs or CIDRs). The password is never read from the TOML file.
 
 ## Features
 
@@ -120,9 +130,9 @@ Do not use `--no-auth` when the service is reachable through a reverse proxy or 
 
 Every filesystem operation goes through a common Vault sandbox. It rejects absolute paths, encoded traversal, Windows traversal syntax, reserved directories (`.git`, `.obsidian`, `.trash`), and symlink components. Markdown is limited to UTF-8 and 10 MiB. SVG responses receive a restrictive sandbox CSP so they remain viewable as images without executing active content.
 
-Password login uses Argon2, random in-memory sessions, HttpOnly `SameSite=Strict` cookies, login throttling, and a CSRF token for every mutation. Sessions disappear when the process restarts. The UI sanitizes preview HTML, while the server sets CSP, `nosniff`, frame, and referrer protections. CORS is not enabled.
+Password login uses Argon2, random session tokens, HttpOnly `SameSite=Strict` cookies, login throttling, and a CSRF token for every mutation. By default a session ends when the browser closes and expires on the server after 12 hours. **Keep me signed in for 30 days** on the login page issues a fixed 30-day session instead (it does not extend with use). Sessions are stored in `sessions.json` under `--data-dir` (mode 600, token hashes only), so restarts and updates keep users signed in. Changing the username, password, or passkey RP ID signs everyone out, passkey sessions end once that passkey is revoked, and deleting `sessions.json` before a restart signs out every browser. The UI sanitizes preview HTML, while the server sets CSP, `nosniff`, frame, and referrer protections. CORS is not enabled.
 
-Use `--secure-cookie` when the browser-facing origin is HTTPS. Do not expose a plain-HTTP OWG listener to an untrusted network.
+Use `--secure-cookie` when the browser-facing origin is HTTPS; an `https://` `--public-url` enables it automatically. Do not expose a plain-HTTP OWG listener to an untrusted network.
 
 ## Reverse proxy
 
@@ -147,6 +157,48 @@ OBSIDIAN_WEB_PASSWORD='choose-a-long-password' ./obsidian-web \
 Caddy sets `X-Forwarded-For` for upstream requests. OWG uses it for per-client login throttling only when the TCP peer matches a configured trusted proxy, and parses proxy chains from right to left. Requests from any other peer ignore forwarding headers. Never configure `0.0.0.0/0` or `::/0` as a trusted proxy; doing so would allow clients that can reach OWG directly to spoof their rate-limit identity.
 
 Keep OWG bound to `127.0.0.1`. If Caddy connects over IPv6 loopback, also add `--trusted-proxy ::1/128`. For a proxy on another machine, trust only its exact private address or narrow network and use a private tunnel such as WireGuard or Tailscale.
+
+## Passkey login (shared with bookmarkd)
+
+OWG verifies passkeys with the same library and database format as [bookmarkd](https://github.com/zhangchaosd/bookmarkd), so a passkey registered in bookmarkd also signs in to OWG. Passkeys are bound to a domain (the RP ID), not to one site: both services must be served from the RP ID or its subdomains, for example bookmarkd at `https://fav.zhangchao.dev` and OWG at `https://obsidian.zhangchao.dev` with RP ID `zhangchao.dev`.
+
+1. Take a consistent copy of bookmarkd's authentication database. Do not copy the live file while bookmarkd runs; use its backup command, which also clears sessions:
+
+   ```bash
+   bookmarkd --config ~/bookmarkd/config.toml backup --include-auth --output /tmp/bookmarkd-auth
+   install -m 600 /tmp/bookmarkd-auth/auth.db /srv/obsidian-web/auth.db
+   ```
+
+   Only `auth.db` is needed; it already contains the RP ID and user handle (`user-id.txt` holds the same value).
+2. Start OWG with the exact origin browsers use:
+
+   ```bash
+   OBSIDIAN_WEB_USERNAME='me' OBSIDIAN_WEB_PASSWORD='choose-a-long-password' ./obsidian-web \
+     --vault /path/to/MyVault --listen 127.0.0.1:8765 --trusted-proxy 127.0.0.1/32 \
+     --public-url https://obsidian.zhangchao.dev \
+     --passkey-db /srv/obsidian-web/auth.db
+   ```
+
+   Startup fails with a clear message if the database is unreadable or the origin is outside its RP ID. The password is optional when passkeys are configured.
+3. The login page shows **Sign in with a passkey**.
+
+Passkeys are registered, renamed, and revoked in bookmarkd. A copy is a snapshot: copy the database again after adding or revoking passkeys. If both services run on the same host as the same user, `--passkey-db` can instead point at bookmarkd's live `auth.db`; it is a WAL-mode SQLite database designed for this, and revocations then apply immediately. OWG keeps its own browser sessions (`app_id` `obsidian-web`) and never accepts bookmarkd sessions. Never place the database on NFS/SMB.
+
+## Updates
+
+Open **About and updates** (the gear next to the Vault name) to see the running version, check GitHub Releases, read release notes, and install. Installing downloads this platform's archive, verifies it against `SHA256SUMS.txt`, checks that the new binary runs and reports the expected version, replaces the executable (keeping the previous one as `obsidian-web.old`), and restarts in place with the same arguments and PID, so systemd and similar managers keep tracking it. Signed-in browsers stay signed in. Save open drafts first; the button stays disabled while any are unsaved.
+
+Optional daily or weekly checks only report new versions; installing always needs confirmation. Update settings are stored in `update.json` under `--data-dir` (default: `~/.local/share/obsidian-web` on Linux, `~/Library/Application Support/obsidian-web` on macOS). The service user needs write access to the executable's directory.
+
+From a terminal:
+
+```bash
+./obsidian-web update check
+./obsidian-web update install --yes   # then restart the service
+./obsidian-web update rollback --yes  # swap back to obsidian-web.old
+```
+
+Windows can check for updates and links to the download, but cannot replace a running executable; install manually there.
 
 ## Development
 
@@ -181,7 +233,7 @@ Recommended independent backups include Git, Time Machine, Windows File History,
 
 ## Known limitations
 
-- Authentication and sessions are process-local; there is no account or recovery system.
+- There is a single login, with no accounts or recovery system. Passkeys are managed in bookmarkd.
 - The in-memory index is rebuilt after filesystem batches and is not persisted.
 - Renaming a note does not rewrite Wiki Links in other notes.
 - Wiki Link resolution intentionally reports ambiguity rather than guessing.
@@ -191,7 +243,7 @@ Recommended independent backups include Git, Time Machine, Windows File History,
 
 ## Privacy
 
-There is no telemetry, analytics, cloud service, or external API call. Note contents are neither logged nor stored outside the Vault.
+There is no telemetry, analytics, or cloud service. The only outbound requests are update checks and downloads from GitHub, made when you check or install, or on a schedule you enable. Note contents are neither logged nor stored outside the Vault.
 
 ## Automated builds and releases
 

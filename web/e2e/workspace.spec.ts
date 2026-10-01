@@ -16,6 +16,7 @@ async function workspace(page: Page, mobile: boolean) {
     ["B.md", { content: "# Beta\n\nSecond note.", hash: "b1" }]
   ]);
   let socket: WebSocketRoute | undefined;
+  let updateSettings = { schedule: "off", weekday: 1, time: "04:00", channel: "stable" };
   await page.routeWebSocket("**/api/v1/ws", ws => { socket = ws; });
   await page.route("**/api/v1/**", async route => {
     const request = route.request(); const url = new URL(request.url());
@@ -26,6 +27,10 @@ async function workspace(page: Page, mobile: boolean) {
     else if (path === "auth/logout") return route.fulfill({ status: 204 });
     else if (path === "tree") body = { entries: [...files.keys()].map(path => ({ name: path, path, type: "markdown" })) };
     else if (path === "backlinks") body = { items: [] };
+    else if (path === "update" || path === "update/settings") {
+      if (request.method() === "PATCH") updateSettings = request.postDataJSON();
+      body = { current: "0.4.1", platform: "linux-x86_64", installable: true, settings: updateSettings, checkedAt: 1790000000, error: null, available: true, latest: { version: "0.9.0", url: "https://example.com/release", notes: "Faster search.", publishedAt: "", prerelease: false } };
+    }
     else if (path === "search") {
       const query = (url.searchParams.get("q") ?? "").toLowerCase();
       body = { results: [...files].filter(([, file]) => file.content.toLowerCase().includes(query)).map(([path]) => ({ path, score: 1, matches: [{ line: 1, snippet: query }] })) };
@@ -328,4 +333,22 @@ test("open tabs are restored after a reload", async ({ page }, info) => {
   await expect(page.getByRole("tab", { name: "B", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "A", exact: true }).click();
   await expect(page.locator(".cm-content")).toContainText("Original note.");
+});
+
+test("about dialog shows an available update and saves the check schedule", async ({ page }, info) => {
+  const mobile = info.project.name.startsWith("mobile");
+  await workspace(page, mobile);
+  if (mobile) await page.getByRole("button", { name: "Open files", exact: true }).click();
+  await page.getByRole("button", { name: /About and updates, version 0\.9\.0 available/ }).click();
+  const dialog = page.getByRole("dialog", { name: "About and updates" });
+  await expect(dialog).toContainText("v0.9.0 available");
+  await expect(dialog).toContainText("Faster search.");
+  await expect(dialog.getByRole("button", { name: "Update to v0.9.0" })).toBeVisible();
+  await dialog.getByLabel("Frequency").selectOption("daily");
+  const saved = page.waitForRequest(request => request.url().endsWith("/api/v1/update/settings"));
+  await dialog.getByRole("button", { name: "Save settings" }).click();
+  expect((await saved).postDataJSON()).toMatchObject({ schedule: "daily", time: "04:00", channel: "stable" });
+  await expect(dialog).toContainText("Update settings saved.");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
 });
