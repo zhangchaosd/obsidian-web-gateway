@@ -40,7 +40,7 @@ OBSIDIAN_WEB_PASSWORD='choose-a-long-password' cargo run --release -- \
 
 Open <http://127.0.0.1:8765>. A release binary includes the frontend and does not require Node.js.
 
-Authentication is enabled by default. Set `OBSIDIAN_WEB_PASSWORD` or pass `--password`. `--no-auth` is intended only for trusted localhost use. OWG never writes the password to a config file.
+Authentication is enabled by default. Set `OBSIDIAN_WEB_PASSWORD` or pass `--password`. `--no-auth` is intended only for trusted localhost use; in that mode OWG accepts only `localhost`, `*.localhost`, or IP-address `Host` headers to block DNS rebinding. OWG never writes the password to a config file.
 
 ## CLI
 

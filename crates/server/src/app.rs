@@ -19,6 +19,7 @@ use crate::{
     index::VaultIndex,
     security::{
         auth::{AuthStore, require_auth},
+        origin::local_origin_guard,
         sandbox::VaultSandbox,
     },
     vault::{
@@ -102,6 +103,10 @@ pub fn router(state: AppState) -> Router {
         .merge(protected)
         .fallback(static_handler)
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
+        .layer(middleware::from_fn_with_state(
+            state.auth.clone(),
+            local_origin_guard,
+        ))
         .layer(middleware::from_fn(security_headers))
         .layer(CatchPanicLayer::new())
         .layer(TraceLayer::new_for_http())
@@ -420,6 +425,42 @@ mod tests {
                 "sandbox; default-src 'none'"
             ))
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn no_auth_mode_rejects_rebound_hosts_and_foreign_origins()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        fs::write(directory.path().join("A.md"), "one")?;
+        let auth = AuthStore::new(false, None, false)?;
+        let application = router(state_for_tests(service(directory.path(), false)?, auth)?);
+        let request = |host: &str, origin: Option<&str>| {
+            let mut builder = Request::builder()
+                .uri("/api/v1/file?path=A.md")
+                .header(header::HOST, host);
+            if let Some(origin) = origin {
+                builder = builder.header(header::ORIGIN, origin);
+            }
+            builder.body(Body::empty())
+        };
+        for (host, origin, expected) in [
+            ("127.0.0.1:8765", None, StatusCode::OK),
+            (
+                "localhost:8765",
+                Some("http://localhost:8765"),
+                StatusCode::OK,
+            ),
+            ("rebind.attacker.example:8765", None, StatusCode::FORBIDDEN),
+            (
+                "127.0.0.1:8765",
+                Some("https://attacker.example"),
+                StatusCode::FORBIDDEN,
+            ),
+        ] {
+            let response = application.clone().oneshot(request(host, origin)?).await?;
+            assert_eq!(response.status(), expected, "{host} {origin:?}");
+        }
         Ok(())
     }
 

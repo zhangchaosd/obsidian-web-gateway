@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Security: with `--no-auth`, only `localhost`, `*.localhost`, and IP-literal `Host` headers are accepted, and a browser `Origin` must match, blocking DNS-rebinding access to the Vault.
+- Renaming a note keeps its `.md` extension; case-only renames now work on case-insensitive filesystems; folders cannot be moved inside themselves.
+- Folders can be renamed, moved, and moved to trash from a menu in the sidebar.
+- The search index updates only the changed paths instead of rebuilding the whole Vault after each write; the UI no longer refetches the file tree after every save and coalesces refresh bursts.
+- Editor highlighting uses the app palette in both color schemes, without underlined headings, and highlights YAML frontmatter.
+- Search runs while typing; open tabs and the split ratio are restored after a reload (drafts are not persisted, and signing out clears the saved tabs).
+- Smaller UI fixes: platform-correct shortcut labels, hidden zero counts on attachment-only folders, a Browse files button on the mobile start screen, accurate connection wording on the login screen, and Escape no longer closes panels when the editor uses it.
+
 ## 0.4.1 — 2026-09-06
 
 - Preserve the visible content position when switching between edit, preview, and split modes using Markdown source-line anchors.

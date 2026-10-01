@@ -171,7 +171,7 @@ pub async fn change_path(
         .vault
         .change_path(request.old_path, request.new_path)
         .await?;
-    rebuild_index(&state).await;
+    refresh_index(&state, vec![old_path.clone(), new_path.clone()]).await;
     let _ = state.events.send(GatewayEvent {
         kind: "file.renamed".into(),
         payload: serde_json::json!({ "oldPath": old_path, "newPath": new_path }),
@@ -280,16 +280,16 @@ pub async fn backlinks(
 }
 
 async fn refresh_after_write(state: &AppState, kind: &str, path: String) {
-    rebuild_index(state).await;
+    refresh_index(state, vec![path.clone()]).await;
     let _ = state.events.send(GatewayEvent::path(kind, path));
 }
 
-async fn rebuild_index(state: &AppState) {
+/// Re-indexes only the written paths so search and backlinks are current when
+/// the response returns, without waiting for the filesystem watcher.
+async fn refresh_index(state: &AppState, paths: Vec<String>) {
     let sandbox = state.vault.sandbox().clone();
-    let result = tokio::task::spawn_blocking(move || VaultIndex::build(&sandbox)).await;
-    match result {
-        Ok(Ok((rebuilt, _))) => *state.index.write().await = rebuilt,
-        Ok(Err(error)) => tracing::warn!(error = %error, "index refresh failed"),
+    match tokio::task::spawn_blocking(move || VaultIndex::scan_paths(&sandbox, &paths)).await {
+        Ok(update) => state.index.write().await.apply(update),
         Err(error) => tracing::warn!(error = %error, "index refresh task failed"),
     }
 }

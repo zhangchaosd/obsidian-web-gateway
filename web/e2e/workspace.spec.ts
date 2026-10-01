@@ -26,7 +26,15 @@ async function workspace(page: Page, mobile: boolean) {
     else if (path === "auth/logout") return route.fulfill({ status: 204 });
     else if (path === "tree") body = { entries: [...files.keys()].map(path => ({ name: path, path, type: "markdown" })) };
     else if (path === "backlinks") body = { items: [] };
-    else if (path === "search") body = { results: [] };
+    else if (path === "search") {
+      const query = (url.searchParams.get("q") ?? "").toLowerCase();
+      body = { results: [...files].filter(([, file]) => file.content.toLowerCase().includes(query)).map(([path]) => ({ path, score: 1, matches: [{ line: 1, snippet: query }] })) };
+    }
+    else if (path === "path" && request.method() === "PATCH") {
+      const data = request.postDataJSON(); const file = files.get(data.oldPath);
+      if (!file) return route.fulfill({ status: 404, json: { error: "not_found" } });
+      files.delete(data.oldPath); files.set(data.newPath, file); body = { path: data.newPath };
+    }
     else if (path === "files") { const data = request.postDataJSON(); files.set(data.path, { content: data.content, hash: "new" }); body = { path: data.path, revision: { hash: "new", mtimeMs: 0 } }; }
     else if (path === "file") {
       if (request.method() === "PUT") {
@@ -285,4 +293,39 @@ test("late preview images do not move the restored section out of view", async (
   release();
   await expect.poll(() => page.locator(".preview img").evaluate(image => (image as HTMLImageElement).naturalHeight)).toBe(2000);
   await expect(page.getByRole("heading", { name: "After image", exact: true })).toBeInViewport();
+});
+
+test("search runs while typing without pressing Enter", async ({ page }, info) => {
+  const mobile = info.project.name.startsWith("mobile");
+  await workspace(page, mobile);
+  if (mobile) await page.getByRole("button", { name: "Open files", exact: true }).click();
+  await page.getByLabel("Search vault").fill("second note");
+  await expect(page.locator(".search-results").getByRole("button")).toHaveCount(1);
+  await expect(page.locator(".search-results")).toContainText("B.md");
+});
+
+test("renaming a note keeps its .md extension", async ({ page }, info) => {
+  const mobile = info.project.name.startsWith("mobile");
+  const state = await workspace(page, mobile);
+  const renamed = page.waitForRequest(request => request.url().endsWith("/api/v1/path") && request.method() === "PATCH");
+  await page.getByRole("button", { name: "Note actions", exact: true }).click();
+  await page.getByRole("button", { name: "Rename or move note", exact: true }).click();
+  await page.getByLabel("New path").fill("Renamed");
+  await page.getByRole("button", { name: "Apply changes", exact: true }).click();
+  expect((await renamed).postDataJSON()).toEqual({ oldPath: "A.md", newPath: "Renamed.md" });
+  await expect(page.locator("header strong")).toHaveText("Renamed.md");
+  expect(state.files.has("Renamed.md")).toBe(true);
+});
+
+test("open tabs are restored after a reload", async ({ page }, info) => {
+  const mobile = info.project.name.startsWith("mobile");
+  const state = await workspace(page, mobile);
+  await page.getByRole("button", { name: "New tab", exact: true }).click();
+  await state.open("B.md");
+  await expect(page.locator("header strong")).toHaveText("B.md");
+  await page.reload();
+  await expect(page.getByRole("tablist", { name: "Open notes" }).getByRole("tab")).toHaveCount(2);
+  await expect(page.getByRole("tab", { name: "B", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "A", exact: true }).click();
+  await expect(page.locator(".cm-content")).toContainText("Original note.");
 });

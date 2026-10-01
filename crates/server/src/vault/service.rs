@@ -163,7 +163,23 @@ impl VaultService {
         tokio::task::spawn_blocking(move || {
             let source = sandbox.resolve_existing(&old)?;
             let destination = sandbox.resolve_new(&new)?;
-            if destination.exists() {
+            if source == sandbox.root() {
+                return Err(AppError::ForbiddenPath);
+            }
+            if fs::symlink_metadata(&source)?.is_dir() {
+                if destination.starts_with(&source) {
+                    return Err(AppError::InvalidRequest(
+                        "a folder cannot be moved inside itself".into(),
+                    ));
+                }
+            } else if is_markdown(&source) != is_markdown(&destination) {
+                return Err(AppError::InvalidRequest(if is_markdown(&source) {
+                    "notes must keep the .md extension".into()
+                } else {
+                    "attachments cannot be renamed to .md".into()
+                }));
+            }
+            if destination.exists() && !is_case_only_rename(&source, &destination)? {
                 return Err(AppError::InvalidRequest(
                     "destination already exists".into(),
                 ));
@@ -348,12 +364,42 @@ fn revision(metadata: &fs::Metadata, bytes: &[u8]) -> Revision {
     }
 }
 
-fn ensure_markdown(path: &str) -> AppResult<()> {
-    if Path::new(path)
-        .extension()
+fn is_markdown(path: &Path) -> bool {
+    path.extension()
         .and_then(|value| value.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
+/// On case-insensitive filesystems `a.md` -> `A.md` reports the destination as
+/// existing because it is the source itself. Allow it unless a distinct entry
+/// with the exact destination name is present.
+fn is_case_only_rename(source: &Path, destination: &Path) -> AppResult<bool> {
+    let (Some(parent), Some(source_name), Some(destination_name)) = (
+        source.parent(),
+        source.file_name().and_then(|value| value.to_str()),
+        destination.file_name(),
+    ) else {
+        return Ok(false);
+    };
+    let Some(destination_str) = destination_name.to_str() else {
+        return Ok(false);
+    };
+    if destination.parent() != Some(parent)
+        || source_name == destination_str
+        || source_name.to_lowercase() != destination_str.to_lowercase()
     {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(parent)? {
+        if entry?.file_name() == destination_name {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn ensure_markdown(path: &str) -> AppResult<()> {
+    if is_markdown(Path::new(path)) {
         Ok(())
     } else {
         Err(AppError::InvalidRequest(
@@ -475,6 +521,41 @@ mod tests {
             })
             .await;
         assert!(matches!(result, Err(AppError::Forbidden)));
+    }
+
+    #[tokio::test]
+    async fn rename_keeps_note_extension_and_allows_case_only_changes() {
+        let dir = tempdir().expect("temp dir");
+        fs::write(dir.path().join("a.md"), "one").expect("fixture");
+        fs::write(dir.path().join("b.md"), "two").expect("fixture");
+        fs::create_dir(dir.path().join("Folder")).expect("folder");
+        let service = VaultService::new(
+            VaultSandbox::new(dir.path(), false).expect("sandbox"),
+            false,
+            1024,
+        );
+        let missing_extension = service.change_path("a.md".into(), "renamed".into()).await;
+        assert!(matches!(
+            missing_extension,
+            Err(AppError::InvalidRequest(_))
+        ));
+        let existing = service.change_path("a.md".into(), "b.md".into()).await;
+        assert!(matches!(existing, Err(AppError::InvalidRequest(_))));
+        let into_itself = service
+            .change_path("Folder".into(), "Folder/Inner".into())
+            .await;
+        assert!(matches!(into_itself, Err(AppError::InvalidRequest(_))));
+
+        service
+            .change_path("a.md".into(), "A.md".into())
+            .await
+            .expect("case-only rename");
+        let names = fs::read_dir(dir.path())
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| name == "A.md"));
+        assert!(!names.iter().any(|name| name == "a.md"));
     }
 
     #[test]

@@ -43,7 +43,7 @@ $env:OBSIDIAN_WEB_PASSWORD = "请设置一个足够长的密码"
 
 浏览器访问 <http://127.0.0.1:8765>。
 
-认证默认启用。通过 `OBSIDIAN_WEB_PASSWORD` 设置密码，或传递 `--password`。`--no-auth` 仅适合可信的 localhost 环境。OWG 不会自动把密码写入配置文件。
+认证默认启用。通过 `OBSIDIAN_WEB_PASSWORD` 设置密码，或传递 `--password`。`--no-auth` 仅适合可信的 localhost 环境；此模式下 OWG 只接受 `localhost`、`*.localhost` 或 IP 地址形式的 `Host` 头，以防御 DNS 重绑定攻击。OWG 不会自动把密码写入配置文件。
 
 ## CLI
 

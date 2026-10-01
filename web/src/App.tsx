@@ -24,7 +24,10 @@ type WorkspaceTab = {
   backlinks: Backlink[];
   showDiff: boolean;
 };
-type MutationDialog = { kind: "file" | "directory" | "rename" | "delete"; value: string };
+type MutationTarget = { path: string; type: "markdown" | "directory" };
+type MutationDialog = { kind: "file" | "directory" | "rename" | "delete"; value: string; target?: MutationTarget };
+type SavedWorkspace = { tabs: { path: string | null; mode: WorkspaceTab["mode"] }[]; active: number };
+const modKey = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl";
 type IconName = "archive" | "arrow-left" | "book" | "check" | "chevron" | "close" | "document" | "edit" | "external" | "file-plus" | "folder" | "folder-plus" | "info" | "link" | "menu" | "more" | "panel" | "preview" | "save" | "search" | "sparkle" | "trash";
 
 export default function App() {
@@ -59,8 +62,11 @@ export default function App() {
   const saving = useRef(new Set<number>());
   const [mutating, setMutating] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [autosave, setAutosave] = useState(() => localStorage.getItem("owg-autosave") === "true");
-  const [lineNumbers, setLineNumbers] = useState(() => localStorage.getItem("owg-line-numbers") !== "false");
+  const [autosave, setAutosave] = useState(() => readStorage("owg-autosave") === "true");
+  const [lineNumbers, setLineNumbers] = useState(() => readStorage("owg-line-numbers") !== "false");
+  const [folderMenu, setFolderMenu] = useState<string | null>(null);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+  const workspaceRestored = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const documentRef = useRef<DocumentState | null>(null);
   const tabsRef = useRef(tabs);
@@ -77,7 +83,11 @@ export default function App() {
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0];
   const document = activeTab.document;
   const [compact, setCompact] = useState(() => window.innerWidth <= 760);
-  const [splitRatio, setSplitRatio] = useState(50);
+  const [splitRatio, setSplitRatioState] = useState(() => {
+    const saved = Number(readStorage("owg-split-ratio"));
+    return saved >= 30 && saved <= 70 ? saved : 50;
+  });
+  const setSplitRatio = useCallback((ratio: number) => { setSplitRatioState(ratio); writeStorage("owg-split-ratio", String(ratio)); }, []);
   useEffect(() => {
     const media = matchMedia("(max-width: 760px)");
     const update = () => setCompact(media.matches);
@@ -147,6 +157,48 @@ export default function App() {
     } catch { updateTab(tabId, tab => tab.document?.path === path ? { ...tab, backlinks: [] } : tab); }
   }, [updateTab]);
 
+  // Reopen the previous session's tabs. Drafts are not persisted, only which notes were open.
+  const restoreWorkspace = useCallback(async (key: string) => {
+    let saved: SavedWorkspace | null = null;
+    try { saved = JSON.parse(readStorage(key) ?? "null") as SavedWorkspace | null; } catch { /* Ignore malformed state. */ }
+    if (!saved?.tabs?.length || !saved.tabs.some(tab => tab.path)) return;
+    const files = await Promise.all(saved.tabs.map(tab => tab.path ? api<VaultFile>(`/api/v1/file?path=${q(tab.path)}`).catch(() => null) : null));
+    // Respect anything the user opened while the files were loading.
+    if (tabsRef.current.some(tab => tab.document)) return;
+    const restored: WorkspaceTab[] = [];
+    let active = 0;
+    saved.tabs.forEach((entry, index) => {
+      const file = files[index];
+      if (entry.path && !file) return;
+      if (index <= saved.active) active = restored.length;
+      restored.push({
+        ...newWorkspaceTab(++tabSequenceRef.current),
+        mode: entry.mode === "preview" || entry.mode === "split" ? entry.mode : "edit",
+        document: file ? { ...file, savedContent: file.content, dirty: false, externalChangeDetected: false } : null
+      });
+    });
+    if (!restored.some(tab => tab.document)) return;
+    const activeTab = restored[Math.min(active, restored.length - 1)];
+    setTabs(restored);
+    activeTabIdRef.current = activeTab.id;
+    documentRef.current = activeTab.document;
+    setActiveTabId(activeTab.id);
+    setStatus(activeTab.document ? "Saved" : "Ready");
+    for (const tab of restored) if (tab.document) void fetchBacklinks(tab.document.path, tab.id);
+  }, [fetchBacklinks, setTabs]);
+
+  const workspaceKey = system ? `owg-workspace:${system.vault.name}` : "";
+  useEffect(() => {
+    if (!authenticated || !workspaceKey || workspaceRestored.current) return;
+    workspaceRestored.current = true;
+    void restoreWorkspace(workspaceKey).finally(() => setWorkspaceReady(true));
+  }, [authenticated, workspaceKey, restoreWorkspace]);
+
+  const savedWorkspace = JSON.stringify({ tabs: tabs.map(tab => ({ path: tab.document?.path ?? null, mode: tab.mode })), active: tabs.findIndex(tab => tab.id === activeTabId) } satisfies SavedWorkspace);
+  useEffect(() => {
+    if (authenticated && workspaceReady && workspaceKey) writeStorage(workspaceKey, savedWorkspace);
+  }, [authenticated, workspaceReady, workspaceKey, savedWorkspace]);
+
   const loadFile = useCallback(async (path: string, tabId = activeTabIdRef.current) => {
     const before = tabsRef.current.find(tab => tab.id === tabId)?.document;
     const sequence = (loadSequence.current.get(tabId) ?? 0) + 1;
@@ -210,7 +262,6 @@ export default function App() {
       });
       updateTab(tabId, tab => ({ ...tab, document: tab.document?.path === current.path ? { ...tab.document, revision: response.revision, savedContent: current.content, dirty: tab.document.content !== current.content, externalChangeDetected: false, externalContent: undefined } : tab.document }));
       setStatus("Saved");
-      await refreshTree();
       return tabsRef.current.find(tab => tab.id === tabId)?.document?.dirty === false;
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) {
@@ -219,17 +270,25 @@ export default function App() {
       } else { setError(messageOf(cause)); setStatus("Save failed"); }
       return false;
     } finally { saving.current.delete(tabId); }
-  }, [refreshTree, system?.features.readOnly, updateTab]);
+  }, [system?.features.readOnly, updateTab]);
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
       if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "p" || (event.shiftKey && event.key.toLowerCase() === "f"))) { event.preventDefault(); setDrawer(true); window.setTimeout(() => searchRef.current?.focus(), 0); }
-      if (event.key === "Escape") { setMutationDialog(null); setPendingPath(null); setPendingCloseTab(null); setConfirmation(null); setMenuOpen(false); setDrawer(false); if (window.innerWidth <= 1050) setRightOpen(false); }
+      // The editor consumes Escape for its own panels (search, autocomplete).
+      if (event.key === "Escape" && !event.defaultPrevented) { setFolderMenu(null); setMutationDialog(null); setPendingPath(null); setPendingCloseTab(null); setConfirmation(null); setMenuOpen(false); setDrawer(false); if (window.innerWidth <= 1050) setRightOpen(false); }
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
   }, [save]);
+
+  useEffect(() => {
+    if (!folderMenu) return;
+    const close = (event: PointerEvent) => { if (!(event.target as Element | null)?.closest?.(".folder-menu, .folder-more")) setFolderMenu(null); };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [folderMenu]);
 
   useEffect(() => {
     const listener = (event: BeforeUnloadEvent) => {
@@ -275,10 +334,26 @@ export default function App() {
     let socket: WebSocket | null = null;
     let reconnect = 0;
     let stopped = false;
+    // A single save or rename produces bursts of events; coalesce the follow-up requests.
+    let reconnected = false;
+    let treeTimer = 0;
+    let backlinksTimer = 0;
+    const scheduleTree = () => {
+      window.clearTimeout(treeTimer);
+      treeTimer = window.setTimeout(() => void refreshTree().catch(cause => setError(messageOf(cause))), 200);
+    };
+    const scheduleBacklinks = () => {
+      window.clearTimeout(backlinksTimer);
+      backlinksTimer = window.setTimeout(() => {
+        for (const tab of tabsRef.current) if (tab.document) void fetchBacklinks(tab.document.path, tab.id);
+      }, 300);
+    };
     const connect = () => {
       socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/v1/ws`);
       socket.onopen = () => {
         setConnected(true);
+        if (reconnected) scheduleTree();
+        reconnected = true;
         for (const tab of tabsRef.current) if (tab.document) void syncTab(tab.id, tab.document.path);
       };
       socket.onmessage = event => {
@@ -291,26 +366,38 @@ export default function App() {
           if (payload?.path === path || payload?.oldPath === path || payload?.newPath === path) {
             void syncTab(tab.id, path, payload?.oldPath === path ? payload.newPath ?? path : path);
           }
-          if (message.type === "index.updated") void fetchBacklinks(path, tab.id);
         }
-        if (message.type.startsWith("file.") || message.type === "index.updated") void refreshTree().catch(cause => setError(messageOf(cause)));
+        // Content edits do not change the tree; only structural events (or missed events) do.
+        if (["file.created", "file.deleted", "file.renamed"].includes(message.type) || (message.type === "index.updated" && (message.payload as { reason?: string } | undefined)?.reason === "lagged")) scheduleTree();
+        if (message.type === "index.updated") scheduleBacklinks();
       };
       socket.onclose = () => { setConnected(false); if (!stopped) reconnect = window.setTimeout(connect, 2000); };
     };
     connect();
-    return () => { stopped = true; window.clearTimeout(reconnect); socket?.close(); };
+    return () => { stopped = true; window.clearTimeout(reconnect); window.clearTimeout(treeTimer); window.clearTimeout(backlinksTimer); socket?.close(); };
   }, [authenticated, syncTab, refreshTree, fetchBacklinks]);
 
   const resetSearch = () => { searchSequence.current++; setSearch(""); setResults([]); setSearchState("idle"); };
-  const runSearch = async () => {
+  const runSearch = useCallback(async (query: string) => {
     const sequence = ++searchSequence.current;
-    if (!search.trim()) { setResults([]); setSearchState("idle"); return; }
+    if (!query.trim()) { setResults([]); setSearchState("idle"); return; }
     setSearchState("loading");
     try {
-      const response = await api<{ results: SearchResult[] }>(`/api/v1/search?q=${q(search)}`);
+      const response = await api<{ results: SearchResult[] }>(`/api/v1/search?q=${q(query)}`);
       if (sequence !== searchSequence.current) return;
       setResults(response.results); setSearchState("done");
     } catch (cause) { if (sequence === searchSequence.current) { setSearchState("error"); setError(messageOf(cause)); } }
+  }, []);
+  // Search as the user types, after a short pause; Enter searches immediately.
+  useEffect(() => {
+    if (!search.trim()) return;
+    const timer = window.setTimeout(() => void runSearch(search), 250);
+    return () => window.clearTimeout(timer);
+  }, [search, runSearch]);
+  const changeSearch = (value: string) => {
+    searchSequence.current++;
+    setSearch(value);
+    if (!value.trim()) { setResults([]); setSearchState("idle"); } else setSearchState("loading");
   };
 
   const reviewConflict = async () => {
@@ -326,6 +413,9 @@ export default function App() {
   const signOut = async () => {
     try { await api<void>("/api/v1/auth/logout", { method: "POST" }); } catch { /* Clear local state if the session expired. */ }
     const tab = newWorkspaceTab(++tabSequenceRef.current);
+    // Forget which notes were open so the next person at this browser starts fresh.
+    if (workspaceKey) removeStorage(workspaceKey);
+    workspaceRestored.current = false; setWorkspaceReady(false);
     clearSession(); setAuthenticated(false); setTabs([tab]); setActiveTabId(tab.id);
   };
 
@@ -365,31 +455,35 @@ export default function App() {
     if (!mutationDialog || mutating) return;
     setMutating(true);
     const value = mutationDialog.value.trim();
+    const target = mutationDialog.target;
+    const affected = (path: string) => !!target && (path === target.path || path.startsWith(`${target.path}/`));
+    const hasDraft = () => tabsRef.current.some(tab => tab.document?.dirty && affected(tab.document.path));
+    const draftMessage = target?.type === "directory" ? "Save the notes in this folder first." : "Save this note first.";
     try {
       if (mutationDialog.kind === "file") {
         if (!value) return;
-        const path = value.toLowerCase().endsWith(".md") ? value : `${value}.md`;
+        const path = withMarkdownExtension(value);
         await api("/api/v1/files", { method: "POST", body: JSON.stringify({ path, content: `# ${fileTitle(path)}\n\n` }) });
         setMutationDialog(null); await refreshTree(); requestOpen(path);
       } else if (mutationDialog.kind === "directory") {
         if (!value) return;
         await api("/api/v1/directories", { method: "POST", body: JSON.stringify({ path: value }) });
         setMutationDialog(null); await refreshTree();
-      } else if (mutationDialog.kind === "rename" && document) {
-        if (!value || value === document.path) return;
-        if (document.dirty) {
-          setMutationDialog(null);
-          setError("Save this note before renaming or moving it.");
-          return;
-        }
-        const oldPath = document.path;
-        await api("/api/v1/path", { method: "PATCH", body: JSON.stringify({ oldPath: document.path, newPath: value }) });
-        setTabs(openTabs => openTabs.map(tab => tab.document?.path === oldPath ? { ...tab, document: { ...tab.document, path: value } } : tab));
-        setMutationDialog(null); await refreshTree(); await loadFile(value);
-      } else if (mutationDialog.kind === "delete" && document) {
-        const deletedPath = document.path;
-        await api(`/api/v1/path?path=${q(deletedPath)}`, { method: "DELETE" });
-        setTabs(openTabs => openTabs.map(tab => tab.document?.path === deletedPath ? { ...tab, document: null, backlinks: [], showDiff: false } : tab));
+      } else if (mutationDialog.kind === "rename" && target) {
+        const trimmed = value.replace(/\/+$/, "");
+        // Notes keep their extension even when the user types only a name.
+        const newPath = target.type === "markdown" ? withMarkdownExtension(trimmed) : trimmed;
+        if (!trimmed || newPath === target.path) { setMutationDialog(null); return; }
+        if (hasDraft()) { setMutationDialog(null); setError(`${draftMessage} Unsaved drafts cannot be renamed or moved.`); return; }
+        await api("/api/v1/path", { method: "PATCH", body: JSON.stringify({ oldPath: target.path, newPath }) });
+        const activeWasAffected = !!documentRef.current && affected(documentRef.current.path);
+        setTabs(openTabs => openTabs.map(tab => tab.document && affected(tab.document.path) ? { ...tab, document: { ...tab.document, path: newPath + tab.document.path.slice(target.path.length) } } : tab));
+        setMutationDialog(null); await refreshTree();
+        if (activeWasAffected && documentRef.current) void fetchBacklinks(documentRef.current.path);
+      } else if (mutationDialog.kind === "delete" && target) {
+        if (hasDraft()) { setMutationDialog(null); setError(`${draftMessage} Unsaved drafts are not moved to trash.`); return; }
+        await api(`/api/v1/path?path=${q(target.path)}`, { method: "DELETE" });
+        setTabs(openTabs => openTabs.map(tab => tab.document && affected(tab.document.path) ? { ...tab, document: null, backlinks: [], showDiff: false } : tab));
         setMutationDialog(null); await refreshTree();
       }
     } catch (cause) { setError(messageOf(cause)); } finally { setMutating(false); }
@@ -493,7 +587,8 @@ export default function App() {
   if (!system) return <LoadingState error={error} />;
   if (!authenticated) return <Login vault={system.vault.name} onSuccess={boot} error={error} />;
 
-  const openMutation = (kind: MutationDialog["kind"]) => { setError(""); setMenuOpen(false); setMutationDialog({ kind, value: kind === "rename" ? document?.path ?? "" : "" }); };
+  const openMutation = (kind: MutationDialog["kind"], target?: MutationTarget) => { setError(""); setMenuOpen(false); setFolderMenu(null); setMutationDialog({ kind, target, value: kind === "rename" ? target?.path ?? "" : "" }); };
+  const noteTarget: MutationTarget | undefined = document ? { path: document.path, type: "markdown" } : undefined;
   const requestSignOut = () => {
     if (tabsRef.current.some(tab => tab.document?.dirty)) setConfirmation({ title: "Sign out with unsaved changes?", body: "Your unsaved drafts will be discarded. Cancel to return and save them first.", action: () => void signOut() });
     else void signOut();
@@ -520,13 +615,13 @@ export default function App() {
 
     <aside className={`sidebar ${drawer ? "open" : ""}`}>
       <div className="vault-header"><div className="vault-mark"><Icon name="sparkle" /></div><div><strong>{system.vault.name}</strong><span>{noteCount} notes · local vault</span></div><button className="icon-button mobile-only" onClick={() => setDrawer(false)} aria-label="Close files"><Icon name="close" /></button></div>
-      <form className="search-box" onSubmit={event => { event.preventDefault(); void runSearch(); }}>
-        <Icon name="search" /><input ref={searchRef} value={search} onChange={event => { searchSequence.current++; setSearch(event.target.value); setResults([]); setSearchState("idle"); }} placeholder="Search notes" aria-label="Search vault" />
-        {search ? <button type="button" onClick={resetSearch} aria-label="Clear search"><Icon name="close" /></button> : <kbd>⌘ P</kbd>}
+      <form className="search-box" onSubmit={event => { event.preventDefault(); void runSearch(search); }}>
+        <Icon name="search" /><input ref={searchRef} value={search} onChange={event => changeSearch(event.target.value)} placeholder="Search notes" aria-label="Search vault" />
+        {search ? <button type="button" onClick={resetSearch} aria-label="Clear search"><Icon name="close" /></button> : <kbd>{modKey} P</kbd>}
       </form>
       <div className={`sidebar-section-label root-drop-target ${draggedPath && dropTarget === "" ? "drop-active" : ""}`} onDragOver={event => { if (!draggedPath) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); }} onDrop={event => { event.preventDefault(); const path = draggedPath ?? event.dataTransfer.getData("text/plain"); if (path) void moveFile(path, ""); }}><span>{searchState !== "idle" ? "Search results" : draggedPath ? "Move to Vault root" : "Your files"}</span>{searchState !== "idle" && !draggedPath && <button onClick={resetSearch}><Icon name="arrow-left" /> All files</button>}</div>
       {draggedPath && <div className="drag-help" role="status">Drop on a folder, or above to move to the root</div>}
-      <div className="sidebar-scroll">{searchState === "loading" ? <div className="search-feedback" role="status"><Icon name="search" /><strong>Searching your vault…</strong></div> : searchState === "error" ? <div className="search-feedback" role="status"><Icon name="info" /><strong>Search failed</strong><button onClick={() => void runSearch()}>Try again</button></div> : searchState === "done" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>No notes found</strong><p>Try another word or a shorter phrase.</p><button onClick={resetSearch}>Clear search</button></div> : results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}</div>
+      <div className="sidebar-scroll">{searchState === "loading" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>Searching your vault…</strong></div> : searchState === "error" ? <div className="search-feedback" role="status"><Icon name="info" /><strong>Search failed</strong><button onClick={() => void runSearch(search)}>Try again</button></div> : searchState === "done" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>No notes found</strong><p>Try another word or a shorter phrase.</p><button onClick={resetSearch}>Clear search</button></div> : results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} folderMenu={folderMenu} onFolderMenu={setFolderMenu} onFolderAction={(kind, path) => openMutation(kind, { path, type: "directory" })} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}</div>
       {!system.features.readOnly && <div className="file-actions"><button onClick={() => openMutation("file")}><Icon name="file-plus" /> New note</button><button className="icon-button" onClick={() => openMutation("directory")} aria-label="New folder"><Icon name="folder-plus" /></button></div>}
     </aside>
     {rightOpen && <button className="context-scrim" onClick={() => setRightOpen(false)} aria-label="Close context panel" />}
@@ -549,7 +644,7 @@ export default function App() {
         <div className="document-toolbar">
           <div className={`save-state ${document.dirty ? "dirty" : ""}`}><span role="status">{document.externalChangeDetected ? "Conflict" : status === "Saving" ? "Saving…" : document.dirty ? "● Unsaved" : "✓ Saved"}</span></div>
           <div className="document-stats"><span>{wordCount} words</span><span>{outline.length} headings</span></div>
-          <div className="toolbar-actions"><label className={`toggle-label ${system.features.readOnly ? "hidden" : ""}`}><input disabled={system.features.readOnly} type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); localStorage.setItem("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode !== "preview" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); localStorage.setItem("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty || status === "Saving"}><Icon name="save" /> Save</button>}<div className="note-menu"><button className="icon-button" aria-label="Note actions" aria-expanded={menuOpen} onClick={event => { event.stopPropagation(); setMenuOpen(value => !value); }}><Icon name="more" /></button>{menuOpen && <div className="note-menu-popover"><span>Note actions</span>{!system.features.readOnly && <><button onClick={() => openMutation("rename")}><Icon name="edit" /> Rename or move note</button><button className="danger" onClick={() => openMutation("delete")}><Icon name="trash" /> Move note to trash</button></>}<button onClick={() => { setRightOpen(true); setMenuOpen(false); }}><Icon name="panel" /> Outline & backlinks</button></div>}</div></div>
+          <div className="toolbar-actions"><label className={`toggle-label ${system.features.readOnly ? "hidden" : ""}`}><input disabled={system.features.readOnly} type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); writeStorage("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode !== "preview" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); writeStorage("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty || status === "Saving"}><Icon name="save" /> Save</button>}<div className="note-menu"><button className="icon-button" aria-label="Note actions" aria-expanded={menuOpen} onClick={event => { event.stopPropagation(); setMenuOpen(value => !value); }}><Icon name="more" /></button>{menuOpen && <div className="note-menu-popover"><span>Note actions</span>{!system.features.readOnly && <><button onClick={() => openMutation("rename", noteTarget)}><Icon name="edit" /> Rename or move note</button><button className="danger" onClick={() => openMutation("delete", noteTarget)}><Icon name="trash" /> Move note to trash</button></>}<button onClick={() => { setRightOpen(true); setMenuOpen(false); }}><Icon name="panel" /> Outline & backlinks</button></div>}</div></div>
         </div>
         {showDiff && document.externalContent !== undefined ? <div className="diff-view"><section><h2>Your draft</h2><pre>{document.content}</pre></section><section><h2>Version on disk</h2><pre>{document.externalContent}</pre></section><button onClick={() => setShowDiff(false)}>Close comparison</button></div> : <div className={`document-panes ${mode === "split" ? "is-split" : ""}`} style={splitStyle(splitRatio)}>
           {mode !== "preview" && <div key="editor" className="editor-pane">{mode === "split" && <div className="pane-caption"><Icon name="edit" /> Editor <span>Markdown</span></div>}<Suspense fallback={<div className="editor-loading" role="status">Opening editor…</div>}><MarkdownEditor position={scrollPosition} scrollHandle={editorScrollRef} key={document.path} value={document.content} lineNumbers={lineNumbers} readOnly={system.features.readOnly} jump={jump} onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)} /></Suspense></div>}
@@ -557,7 +652,7 @@ export default function App() {
           {mode !== "edit" && <div key="preview" className="preview-pane">{mode === "split" && <div className="pane-caption"><Icon name="preview" /> Preview <span><i /> Live draft</span></div>}<MarkdownPreview position={scrollPosition} key={document.path} content={document.content} path={document.path} articleRef={previewRef} onWiki={target => void navigateWiki(target)} /></div>}
         </div>}
 
-      </> : <EmptyVault vault={system.vault.name} readOnly={system.features.readOnly} onCreate={() => openMutation("file")} />}
+      </> : <EmptyVault vault={system.vault.name} readOnly={system.features.readOnly} compact={compact} onBrowse={() => setDrawer(true)} onCreate={() => openMutation("file")} />}
     </main>
 
     {rightOpen && <aside className="context-panel">
@@ -569,36 +664,66 @@ export default function App() {
     {confirmation && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="confirmation-title">{confirmation.title}</h2><p>{confirmation.body}</p><div className="modal-actions"><button onClick={() => setConfirmation(null)}>Cancel</button><button className="danger-button" onClick={() => { confirmation.action(); setConfirmation(null); }}>Continue</button></div></div></div>}
     {pendingPath && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="unsaved-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="unsaved-title">Save your changes?</h2><p>You have an unsaved draft. Choose what to do before opening another note.</p><div className="modal-actions"><button onClick={() => setPendingPath(null)}>Keep editing</button><button onClick={() => { const path = pendingPath; setPendingPath(null); void loadFile(path); }}>Discard</button><button className="primary-button" onClick={async () => { if (await save()) { const path = pendingPath; setPendingPath(null); void loadFile(path); } }}>Save & open</button></div></div></div>}
     {closingTab && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="close-tab-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="close-tab-title">Close with unsaved changes?</h2><p>Save your changes to {closingTab.document ? fileTitle(closingTab.document.path) : "this note"} before closing its tab.</p><div className="modal-actions"><button onClick={() => setPendingCloseTab(null)}>Keep tab</button><button onClick={() => closeTabImmediately(closingTab.id)}>Discard & close</button><button className="primary-button" onClick={async () => { if (await save()) closeTabImmediately(closingTab.id); }}>Save & close</button></div></div></div>}
-    {mutationDialog && <MutationModal busy={mutating} error={error} dialog={mutationDialog} documentPath={document?.path} onChange={value => setMutationDialog(current => current ? { ...current, value } : null)} onClose={() => setMutationDialog(null)} onSubmit={submitMutation} />}
+    {mutationDialog && <MutationModal busy={mutating} error={error} dialog={mutationDialog} onChange={value => setMutationDialog(current => current ? { ...current, value } : null)} onClose={() => setMutationDialog(null)} onSubmit={submitMutation} />}
   </div>;
 }
 
 type TreeProps = {
   entries: TreeEntry[]; activePath?: string; draggedPath: string | null; dropTarget: string | null; readOnly: boolean;
+  folderMenu: string | null; onFolderMenu: (path: string | null) => void; onFolderAction: (kind: "rename" | "delete", path: string) => void;
   onOpen: (path: string) => void; onDragStart: (path: string, event: React.DragEvent<HTMLElement>) => void;
   onDragEnd: () => void; onDropTarget: (path: string | null) => void; onMove: (path: string, directory: string) => Promise<void>; depth?: number;
 };
 
-function Tree({ entries, activePath, draggedPath, dropTarget, readOnly, onOpen, onDragStart, onDragEnd, onDropTarget, onMove, depth = 0 }: TreeProps) {
-  return <nav className="tree" aria-label={depth === 0 ? "Vault files" : undefined}>{entries.map(entry => entry.type === "directory" ? <details key={entry.path} open>
-    <summary className={dropTarget === entry.path ? "drop-active" : ""} style={{ paddingLeft: `${12 + depth * 14}px` }} onDragOver={event => { if (!draggedPath) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; onDropTarget(entry.path); }} onDragLeave={() => { if (dropTarget === entry.path) onDropTarget(null); }} onDrop={event => { event.preventDefault(); event.stopPropagation(); const path = draggedPath ?? event.dataTransfer.getData("text/plain"); if (path) void onMove(path, entry.path); }}><Icon name="chevron" /><Icon name="folder" /><span>{entry.name}</span><small>{countNotes(entry.children ?? [])}</small></summary>
-    <Tree entries={entry.children ?? []} activePath={activePath} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={readOnly} onOpen={onOpen} onDragStart={onDragStart} onDragEnd={onDragEnd} onDropTarget={onDropTarget} onMove={onMove} depth={depth + 1} />
-  </details> : entry.type === "markdown" ? <button className={`${entry.path === activePath ? "active" : ""} ${entry.path === draggedPath ? "dragging" : ""}`} draggable={!readOnly} onDragStart={event => onDragStart(entry.path, event)} onDragEnd={onDragEnd} key={entry.path} onClick={() => onOpen(entry.path)} title={entry.path} style={{ paddingLeft: `${30 + depth * 14}px` }} aria-label={`Open ${entry.name}`}><Icon name="document" /><span>{entry.name.replace(/\.md$/i, "")}</span>{entry.path === activePath && <span className="active-pip" />}</button> : <a className={entry.path === draggedPath ? "dragging" : ""} draggable={!readOnly} onDragStart={event => onDragStart(entry.path, event)} onDragEnd={onDragEnd} key={entry.path} href={`/api/v1/asset?path=${q(entry.path)}`} target="_blank" rel="noreferrer" style={{ paddingLeft: `${30 + depth * 14}px` }}><Icon name="archive" /><span>{entry.name}</span></a>)}</nav>;
+function Tree(props: TreeProps) {
+  const { entries, activePath, draggedPath, dropTarget, readOnly, folderMenu, onFolderMenu, onFolderAction, onOpen, onDragStart, onDragEnd, onDropTarget, onMove, depth = 0 } = props;
+  return <nav className="tree" aria-label={depth === 0 ? "Vault files" : undefined}>{entries.map(entry => {
+    if (entry.type === "directory") {
+      const notes = countNotes(entry.children ?? []);
+      // Clicks inside <summary> toggle the folder unless the default action is prevented.
+      const action = (event: React.MouseEvent, run: () => void) => { event.preventDefault(); event.stopPropagation(); run(); };
+      return <details key={entry.path} open>
+        <summary className={`${dropTarget === entry.path ? "drop-active" : ""} ${folderMenu === entry.path ? "menu-open" : ""}`} style={{ paddingLeft: `${12 + depth * 14}px` }} onDragOver={event => { if (!draggedPath) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; onDropTarget(entry.path); }} onDragLeave={() => { if (dropTarget === entry.path) onDropTarget(null); }} onDrop={event => { event.preventDefault(); event.stopPropagation(); const path = draggedPath ?? event.dataTransfer.getData("text/plain"); if (path) void onMove(path, entry.path); }}>
+          <Icon name="chevron" /><Icon name="folder" /><span>{entry.name}</span>{notes > 0 && <small>{notes}</small>}
+          {!readOnly && <button type="button" className="folder-more" aria-label={`Folder actions for ${entry.name}`} aria-expanded={folderMenu === entry.path} onClick={event => action(event, () => onFolderMenu(folderMenu === entry.path ? null : entry.path))}><Icon name="more" /></button>}
+          {folderMenu === entry.path && <div className="folder-menu" role="menu" onClick={event => event.preventDefault()}>
+            <button type="button" role="menuitem" onClick={event => action(event, () => onFolderAction("rename", entry.path))}><Icon name="edit" /> Rename or move folder</button>
+            <button type="button" role="menuitem" className="danger" onClick={event => action(event, () => onFolderAction("delete", entry.path))}><Icon name="trash" /> Move folder to trash</button>
+          </div>}
+        </summary>
+        <Tree {...props} entries={entry.children ?? []} depth={depth + 1} />
+      </details>;
+    }
+    if (entry.type === "markdown") return <button className={`${entry.path === activePath ? "active" : ""} ${entry.path === draggedPath ? "dragging" : ""}`} draggable={!readOnly} onDragStart={event => onDragStart(entry.path, event)} onDragEnd={onDragEnd} key={entry.path} onClick={() => onOpen(entry.path)} title={entry.path} style={{ paddingLeft: `${30 + depth * 14}px` }} aria-label={`Open ${entry.name}`}><Icon name="document" /><span>{entry.name.replace(/\.md$/i, "")}</span>{entry.path === activePath && <span className="active-pip" />}</button>;
+    return <a className={entry.path === draggedPath ? "dragging" : ""} draggable={!readOnly} onDragStart={event => onDragStart(entry.path, event)} onDragEnd={onDragEnd} key={entry.path} href={`/api/v1/asset?path=${q(entry.path)}`} target="_blank" rel="noreferrer" style={{ paddingLeft: `${30 + depth * 14}px` }}><Icon name="archive" /><span>{entry.name}</span></a>;
+  })}</nav>;
 }
 
-function MutationModal({ busy, error, dialog, documentPath, onChange, onClose, onSubmit }: { busy: boolean; error: string; dialog: MutationDialog; documentPath?: string; onChange: (value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent) => void }) {
+function MutationModal({ busy, error, dialog, onChange, onClose, onSubmit }: { busy: boolean; error: string; dialog: MutationDialog; onChange: (value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent) => void }) {
+  const folder = dialog.target?.type === "directory";
+  const subject = dialog.target?.path ?? (folder ? "This folder" : "This note");
   const copy = {
-    file: { icon: "file-plus" as IconName, title: "Create a new note", body: "Choose a path inside your vault.", label: "Note path", placeholder: "Projects/New idea", action: "Create note" },
+    file: { icon: "file-plus" as IconName, title: "Create a new note", body: "Choose a path inside your vault. The .md extension is added for you.", label: "Note path", placeholder: "Projects/New idea", action: "Create note" },
     directory: { icon: "folder-plus" as IconName, title: "Create a new folder", body: "Folders help keep related notes together.", label: "Folder path", placeholder: "Projects/Research", action: "Create folder" },
-    rename: { icon: "edit" as IconName, title: "Rename or move note", body: "Existing links to this note are not updated automatically.", label: "New path", placeholder: "Folder/Note.md", action: "Apply changes" },
-    delete: { icon: "trash" as IconName, title: "Move note to trash?", body: `${documentPath ?? "This note"} will move to .trash and can be recovered from the vault.`, label: "", placeholder: "", action: "Move to trash" }
+    rename: folder
+      ? { icon: "edit" as IconName, title: "Rename or move folder", body: "Links to notes inside this folder are not updated automatically.", label: "New folder path", placeholder: "Areas/Research", action: "Apply changes" }
+      : { icon: "edit" as IconName, title: "Rename or move note", body: "Existing links to this note are not updated automatically. The .md extension is kept.", label: "New path", placeholder: "Folder/Note", action: "Apply changes" },
+    delete: { icon: "trash" as IconName, title: folder ? "Move folder to trash?" : "Move note to trash?", body: `${subject}${folder ? " and everything inside it" : ""} will move to .trash and can be recovered from the vault.`, label: "", placeholder: "", action: "Move to trash" }
   }[dialog.kind];
   const destructive = dialog.kind === "delete";
   return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="mutation-title" onSubmit={onSubmit}><div className={`modal-icon ${destructive ? "danger" : ""}`}><Icon name={copy.icon} /></div><h2 id="mutation-title">{copy.title}</h2><p>{copy.body}</p>{error && <p className="login-error" role="alert">{error}</p>}{!destructive && <label className="field-label">{copy.label}<input autoFocus value={dialog.value} onChange={event => onChange(event.target.value)} placeholder={copy.placeholder} /></label>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className={destructive ? "danger-button" : "primary-button"} type="submit" disabled={busy || (!destructive && !dialog.value.trim())}>{copy.action}</button></div></form></div>;
 }
 
-function EmptyVault({ vault, readOnly, onCreate }: { vault: string; readOnly: boolean; onCreate: () => void }) {
-  return <div className="empty-state"><div className="empty-illustration"><span /><Icon name="book" /></div><span className="eyebrow">Welcome to your workspace</span><h1>{vault}</h1><p>Select a note from the sidebar to start reading, or capture a new idea.</p>{!readOnly && <button className="primary-button" onClick={onCreate}><Icon name="file-plus" /> Create a note</button>}<div className="shortcut-hint"><kbd>⌘ P</kbd><span>Quick search</span><kbd>⌘ S</kbd><span>Save note</span></div></div>;
+function EmptyVault({ vault, readOnly, compact, onBrowse, onCreate }: { vault: string; readOnly: boolean; compact: boolean; onBrowse: () => void; onCreate: () => void }) {
+  return <div className="empty-state"><div className="empty-illustration"><span /><Icon name="book" /></div><span className="eyebrow">Welcome to your workspace</span><h1>{vault}</h1><p>{compact ? "Browse your files to start reading" : "Select a note from the sidebar to start reading"}{readOnly ? "." : ", or capture a new idea."}</p><div className="empty-actions">{compact && <button className="secondary-button" onClick={onBrowse}><Icon name="folder" /> Browse files</button>}{!readOnly && <button className="primary-button" onClick={onCreate}><Icon name="file-plus" /> Create a note</button>}</div><div className="shortcut-hint"><kbd>{modKey} P</kbd><span>Quick search</span><kbd>{modKey} S</kbd><span>Save note</span></div></div>;
+}
+
+function ConnectionNote() {
+  // Describe the transport honestly: plain HTTP is only acceptable on loopback.
+  const secure = location.protocol === "https:";
+  const local = isLoopbackHost(location.hostname);
+  const label = secure ? "HTTPS connection" : local ? "Local connection · not encrypted" : "Unencrypted connection · use HTTPS";
+  return <small><span className={`sync-dot ${secure || local ? "online" : "offline"}`} /> {label}</small>;
 }
 
 function ContextEmpty({ icon, title, body }: { icon: IconName; title: string; body: string }) { return <div className="context-empty"><Icon name={icon} /><strong>{title}</strong><p>{body}</p></div>; }
@@ -616,7 +741,7 @@ function Login({ vault, onSuccess, error }: { vault: string; onSuccess: () => Pr
     catch (cause) { clearSession(); setMessage(cause instanceof ApiError && cause.status === 401 ? "Incorrect password." : messageOf(cause)); setCooldown(true); }
     finally { setSubmitting(false); }
   };
-  return <main className="login-screen"><div className="login-ambient" /><form className="login-card" onSubmit={submit}><div className="vault-mark large"><Icon name="sparkle" /></div><span className="eyebrow">Obsidian Web Gateway</span><h1>Welcome back</h1><p>Sign in to open <strong>{vault}</strong>. Your notes stay on this device.</p><label className="field-label">Password<input type="password" autoFocus autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Enter vault password" /></label>{message && <p className="login-error"><Icon name="info" />{message}</p>}<button className="primary-button login-button" type="submit" disabled={submitting || cooldown}>{submitting ? "Opening vault…" : cooldown ? "Try again in a moment" : "Open vault"}</button><small><span className="sync-dot online" /> Encrypted session · Local connection</small></form></main>;
+  return <main className="login-screen"><div className="login-ambient" /><form className="login-card" onSubmit={submit}><div className="vault-mark large"><Icon name="sparkle" /></div><span className="eyebrow">Obsidian Web Gateway</span><h1>Welcome back</h1><p>Sign in to open <strong>{vault}</strong>. Notes stay on the machine running this gateway.</p><label className="field-label">Password<input type="password" autoFocus autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Enter vault password" /></label>{message && <p className="login-error"><Icon name="info" />{message}</p>}<button className="primary-button login-button" type="submit" disabled={submitting || cooldown}>{submitting ? "Opening vault…" : cooldown ? "Try again in a moment" : "Open vault"}</button><ConnectionNote /></form></main>;
 }
 
 function Icon({ name }: { name: IconName }) {
@@ -635,4 +760,9 @@ function countWords(content: string): number {
   const otherWords = content.replace(cjkPattern, " ").match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
   return otherWords + cjk;
 }
+function withMarkdownExtension(path: string): string { return /\.md$/i.test(path) ? path : `${path}.md`; }
+function isLoopbackHost(hostname: string): boolean { return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "[::1]" || /^127\./.test(hostname); }
+function readStorage(key: string): string | null { try { return localStorage.getItem(key); } catch { return null; } }
+function writeStorage(key: string, value: string): void { try { localStorage.setItem(key, value); } catch { /* Storage may be unavailable. */ } }
+function removeStorage(key: string): void { try { localStorage.removeItem(key); } catch { /* Storage may be unavailable. */ } }
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : "Unexpected error"; }

@@ -1,7 +1,12 @@
 pub mod model;
 pub mod parser;
 
-use std::{collections::BTreeMap, fs, path::Path, time::Instant};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use serde::Serialize;
 use walkdir::WalkDir;
@@ -15,6 +20,19 @@ use model::{IndexedDocument, WikiLink};
 #[derive(Default)]
 pub struct VaultIndex {
     documents: BTreeMap<String, IndexedDocument>,
+}
+
+/// Documents re-read from disk for a set of changed paths.
+#[derive(Default)]
+pub struct IndexUpdate {
+    paths: Vec<String>,
+    documents: Vec<IndexedDocument>,
+}
+
+impl IndexUpdate {
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -73,62 +91,65 @@ impl VaultIndex {
     pub fn build(sandbox: &VaultSandbox) -> AppResult<(Self, IndexStats)> {
         let started = Instant::now();
         let mut index = Self::default();
-        let mut files = 0;
-        let mut attachments = 0;
-        let walker = WalkDir::new(sandbox.root())
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|entry| {
-                entry.path() == sandbox.root()
-                    || entry
-                        .path()
-                        .strip_prefix(sandbox.root())
-                        .is_ok_and(|relative| sandbox.is_visible_relative(relative))
-            });
-        for result in walker {
-            let entry = result.map_err(|error| AppError::Internal(error.to_string()))?;
-            if entry.path() == sandbox.root() {
-                continue;
-            }
-            let relative = entry
-                .path()
-                .strip_prefix(sandbox.root())
-                .map_err(|_| AppError::ForbiddenPath)?;
-            if !sandbox.is_visible_relative(relative) {
-                if entry.file_type().is_dir() { /* WalkDir filtering is handled by visibility below. */
-                }
-                continue;
-            }
-            if entry.file_type().is_symlink() || !entry.file_type().is_file() {
-                continue;
-            }
-            files += 1;
-            if is_markdown(entry.path()) {
-                let bytes = fs::read(entry.path())?;
-                if let Ok(content) = String::from_utf8(bytes) {
-                    let path = display_relative(relative);
-                    let metadata = entry
-                        .metadata()
-                        .map_err(|error| AppError::Internal(error.to_string()))?;
-                    index.documents.insert(
-                        path.clone(),
-                        parser::parse_document(path, content, &metadata),
-                    );
-                }
-            } else {
-                attachments += 1;
-            }
+        let mut documents = Vec::new();
+        let counts = collect(sandbox, sandbox.root(), &mut documents)?;
+        for document in documents {
+            index.documents.insert(document.path.clone(), document);
         }
         let markdown = index.documents.len();
         Ok((
             index,
             IndexStats {
-                files,
+                files: counts.files,
                 markdown,
-                attachments,
+                attachments: counts.attachments,
                 build_ms: started.elapsed().as_millis(),
             },
         ))
+    }
+
+    /// Re-reads only the given Vault-relative paths (files or folders). This is
+    /// blocking I/O; apply the result with [`VaultIndex::apply`].
+    pub fn scan_paths(sandbox: &VaultSandbox, paths: &[String]) -> IndexUpdate {
+        let mut update = IndexUpdate::default();
+        for path in paths {
+            let relative = PathBuf::from(display_relative(Path::new(path)));
+            let key = display_relative(&relative);
+            if key.is_empty() || !sandbox.is_visible_relative(&relative) {
+                continue;
+            }
+            let absolute = sandbox.root().join(&relative);
+            match exact_metadata(&absolute) {
+                Some(metadata) if metadata.is_dir() => {
+                    if let Err(error) = collect(sandbox, &absolute, &mut update.documents) {
+                        tracing::warn!(%error, path = %key, "partial index refresh failed");
+                    }
+                }
+                Some(metadata) if metadata.is_file() && is_markdown(&absolute) => {
+                    if let Ok(Ok(content)) = fs::read(&absolute).map(String::from_utf8) {
+                        update.documents.push(parser::parse_document(
+                            key.clone(),
+                            content,
+                            &metadata,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            update.paths.push(key);
+        }
+        update
+    }
+
+    pub fn apply(&mut self, update: IndexUpdate) {
+        for path in &update.paths {
+            let prefix = format!("{path}/");
+            self.documents
+                .retain(|key, _| key != path && !key.starts_with(&prefix));
+        }
+        for document in update.documents {
+            self.documents.insert(document.path.clone(), document);
+        }
     }
 
     pub fn search(&self, query: &str) -> AppResult<SearchResponse> {
@@ -276,6 +297,70 @@ impl VaultIndex {
     }
 }
 
+#[derive(Default)]
+struct Counts {
+    files: usize,
+    attachments: usize,
+}
+
+fn collect(
+    sandbox: &VaultSandbox,
+    start: &Path,
+    documents: &mut Vec<IndexedDocument>,
+) -> AppResult<Counts> {
+    let mut counts = Counts::default();
+    let walker = WalkDir::new(start)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.path() == sandbox.root()
+                || entry
+                    .path()
+                    .strip_prefix(sandbox.root())
+                    .is_ok_and(|relative| sandbox.is_visible_relative(relative))
+        });
+    for result in walker {
+        let entry = result.map_err(|error| AppError::Internal(error.to_string()))?;
+        if entry.file_type().is_symlink() || !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(sandbox.root())
+            .map_err(|_| AppError::ForbiddenPath)?;
+        counts.files += 1;
+        if is_markdown(entry.path()) {
+            let bytes = fs::read(entry.path())?;
+            if let Ok(content) = String::from_utf8(bytes) {
+                let metadata = entry
+                    .metadata()
+                    .map_err(|error| AppError::Internal(error.to_string()))?;
+                documents.push(parser::parse_document(
+                    display_relative(relative),
+                    content,
+                    &metadata,
+                ));
+            }
+        } else {
+            counts.attachments += 1;
+        }
+    }
+    Ok(counts)
+}
+
+/// Metadata for an entry whose name matches exactly, without following
+/// symlinks. On case-insensitive filesystems a stale `a.md` must not resolve to
+/// a renamed `A.md`.
+fn exact_metadata(path: &Path) -> Option<fs::Metadata> {
+    let name = path.file_name()?;
+    fs::read_dir(path.parent()?)
+        .ok()?
+        .flatten()
+        .find(|entry| entry.file_name() == name)?
+        .metadata()
+        .ok()
+}
+
 fn is_markdown(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
@@ -336,5 +421,33 @@ mod tests {
             index.resolve("A/Rust", None),
             ResolveResponse::Resolved { .. }
         ));
+    }
+
+    #[test]
+    fn partial_updates_track_edits_deletes_and_folder_moves() {
+        let dir = tempdir().expect("temp dir");
+        fs::create_dir_all(dir.path().join("Old")).expect("folder");
+        fs::write(dir.path().join("Old/Note.md"), "first").expect("note");
+        fs::write(dir.path().join("Home.md"), "[[Note]]").expect("note");
+        let sandbox = VaultSandbox::new(dir.path(), false).expect("sandbox");
+        let (mut index, _) = VaultIndex::build(&sandbox).expect("index");
+
+        fs::write(dir.path().join("Home.md"), "edited text").expect("edit");
+        index.apply(VaultIndex::scan_paths(&sandbox, &["Home.md".into()]));
+        assert_eq!(index.search("edited").expect("search").results.len(), 1);
+        assert!(index.backlinks("Old/Note.md").items.is_empty());
+
+        fs::rename(dir.path().join("Old"), dir.path().join("New")).expect("move");
+        index.apply(VaultIndex::scan_paths(
+            &sandbox,
+            &["Old".into(), "New".into()],
+        ));
+        assert!(index.document("Old/Note.md").is_none());
+        assert!(index.document("New/Note.md").is_some());
+
+        fs::remove_file(dir.path().join("Home.md")).expect("delete");
+        index.apply(VaultIndex::scan_paths(&sandbox, &["Home.md".into()]));
+        assert!(index.document("Home.md").is_none());
+        assert_eq!(index.len(), 1);
     }
 }

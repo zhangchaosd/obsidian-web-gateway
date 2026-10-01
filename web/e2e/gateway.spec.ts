@@ -152,3 +152,23 @@ test("moves a file into a folder and back to the vault root by dragging", async 
   await page.getByRole("button", { name: /Home\.md/ }).dragTo(page.locator(".root-drop-target"));
   await expect(page.getByRole("button", { name: /Home\.md/ })).toHaveAttribute("title", "Home.md");
 });
+
+test("renames a folder from its menu and keeps open notes pointing at the new location", async ({ page }, testInfo) => {
+  test.skip(!testInfo.project.name.startsWith("desktop"), "Mutates the shared fixture vault");
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /2026-09-01\.md/ }).click();
+  await expect(page.locator("header strong")).toHaveText("Daily/2026-09-01.md");
+  const rename = async (from: string, to: string) => {
+    await page.locator("summary").filter({ hasText: from }).hover();
+    await page.getByRole("button", { name: `Folder actions for ${from}`, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Rename or move folder" }).click();
+    await page.getByLabel("New folder path").fill(to);
+    await page.getByRole("button", { name: "Apply changes", exact: true }).click();
+    await expect(page.locator("summary").filter({ hasText: to })).toBeVisible();
+  };
+  await rename("Daily", "Journal");
+  await expect(page.locator("header strong")).toHaveText("Journal/2026-09-01.md");
+  await rename("Journal", "Daily");
+  await expect(page.locator("header strong")).toHaveText("Daily/2026-09-01.md");
+});

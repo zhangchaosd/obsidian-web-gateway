@@ -5,10 +5,15 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 
 use crate::{
     error::{AppError, AppResult},
-    index::VaultIndex,
+    index::{IndexUpdate, VaultIndex},
     security::sandbox::VaultSandbox,
     websocket::GatewayEvent,
 };
+
+enum Refresh {
+    Full(VaultIndex),
+    Partial(IndexUpdate),
+}
 
 pub struct WatchHandle {
     _watcher: RecommendedWatcher,
@@ -37,27 +42,55 @@ pub fn start(
                 batch.push(event);
             }
 
-            let mut changed = false;
+            let mut rescan = false;
+            let mut paths = Vec::new();
             for event in batch.into_iter().flatten() {
-                changed = true;
+                rescan |= event.need_rescan();
                 broadcast_event(&sandbox, &events, &event);
+                for path in &event.paths {
+                    match path.strip_prefix(sandbox.root()) {
+                        Ok(relative) if relative.as_os_str().is_empty() => rescan = true,
+                        Ok(relative) if sandbox.is_visible_relative(relative) => {
+                            if let Ok(display) = sandbox.relative_display(path) {
+                                paths.push(display);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
-            if !changed {
+            paths.sort();
+            paths.dedup();
+            if !rescan && paths.is_empty() {
                 continue;
             }
-            let rebuild_sandbox = sandbox.clone();
-            match tokio::task::spawn_blocking(move || VaultIndex::build(&rebuild_sandbox)).await {
-                Ok(Ok((rebuilt, _))) => {
-                    *index.write().await = rebuilt;
+            let refresh_sandbox = sandbox.clone();
+            let refreshed = tokio::task::spawn_blocking(move || {
+                if rescan {
+                    VaultIndex::build(&refresh_sandbox).map(|(rebuilt, _)| Refresh::Full(rebuilt))
+                } else {
+                    Ok(Refresh::Partial(VaultIndex::scan_paths(
+                        &refresh_sandbox,
+                        &paths,
+                    )))
+                }
+            })
+            .await;
+            match refreshed {
+                Ok(Ok(refresh)) => {
+                    match refresh {
+                        Refresh::Full(rebuilt) => *index.write().await = rebuilt,
+                        Refresh::Partial(update) => index.write().await.apply(update),
+                    }
                     let _ = events.send(GatewayEvent {
                         kind: "index.updated".into(),
                         payload: serde_json::json!({}),
                     });
                 }
                 Ok(Err(error)) => {
-                    tracing::warn!(error = %error, "index rebuild after filesystem event failed")
+                    tracing::warn!(error = %error, "index refresh after filesystem event failed")
                 }
-                Err(error) => tracing::warn!(error = %error, "index rebuild task failed"),
+                Err(error) => tracing::warn!(error = %error, "index refresh task failed"),
             }
         }
     });
@@ -90,13 +123,19 @@ fn broadcast_event(
         }
         return;
     }
-    let kind = match event.kind {
-        EventKind::Create(_) => "file.created",
-        EventKind::Remove(_) => "file.deleted",
-        EventKind::Modify(_) => "file.changed",
-        _ => return,
-    };
     for path in &event.paths {
+        let kind = match event.kind {
+            EventKind::Create(_) => "file.created",
+            EventKind::Remove(_) => "file.deleted",
+            // Some backends (FSEvents, Windows) report each side of a rename
+            // separately; classify it by whether the path still exists.
+            EventKind::Modify(notify::event::ModifyKind::Name(_)) if path.exists() => {
+                "file.created"
+            }
+            EventKind::Modify(notify::event::ModifyKind::Name(_)) => "file.deleted",
+            EventKind::Modify(_) => "file.changed",
+            _ => return,
+        };
         if let Some(path) = visible(path) {
             let _ = sender.send(GatewayEvent::path(kind, path));
         }

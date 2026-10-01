@@ -1,4 +1,7 @@
 import { markdown } from "@codemirror/lang-markdown";
+import { yamlFrontmatter } from "@codemirror/lang-yaml";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import CodeMirror, { EditorView, type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useCallback, useEffect, useLayoutEffect, useImperativeHandle, useMemo, useRef, useState, type RefObject } from "react";
 
@@ -41,7 +44,8 @@ export default function MarkdownEditor({ value, lineNumbers, readOnly, jump, pos
     view.requestMeasure(measure);
   }, [position]);
   useLayoutEffect(() => { if (editor.current?.view) restore(editor.current.view); }, [restore]);
-  const extensions = useMemo(() => [markdown(), EditorView.lineWrapping], []);
+  const extensions = useMemo(() => [yamlFrontmatter({ content: markdown() }), EditorView.lineWrapping, syntaxHighlighting(highlightStyle)], []);
+  const theme = useMemo(() => editorTheme(dark), [dark]);
   useEffect(() => {
     const view = editor.current?.view;
     if (!view || !jump) return;
@@ -49,7 +53,44 @@ export default function MarkdownEditor({ value, lineNumbers, readOnly, jump, pos
     view.dispatch({ selection: { anchor: position }, effects: EditorView.scrollIntoView(position, { y: "start" }) });
     view.focus();
   }, [jump]);
-  return <CodeMirror onCreateEditor={restore} theme={dark ? "dark" : "light"} ref={editor} className="editor-surface" value={value} height="100%" extensions={extensions}
+  return <CodeMirror onCreateEditor={restore} theme={theme} ref={editor} className="editor-surface" value={value} height="100%" extensions={extensions}
     basicSetup={{ lineNumbers, foldGutter: false, highlightActiveLineGutter: false }}
     editable={!readOnly} onChange={onChange} aria-label="Markdown editor" />;
+}
+
+// Colors come from the app's CSS variables, so light and dark schemes share one palette.
+const highlightStyle = HighlightStyle.define([
+  { tag: tags.heading1, color: "var(--text)", fontWeight: "700", fontSize: "1.12em" },
+  { tag: [tags.heading2, tags.heading3, tags.heading4, tags.heading5, tags.heading6], color: "var(--text)", fontWeight: "650" },
+  { tag: [tags.processingInstruction, tags.contentSeparator, tags.punctuation], color: "var(--muted)" },
+  { tag: tags.strong, fontWeight: "650" },
+  { tag: tags.emphasis, fontStyle: "italic" },
+  { tag: tags.strikethrough, textDecoration: "line-through" },
+  { tag: [tags.link, tags.labelName], color: "var(--accent-ink)" },
+  { tag: tags.url, color: "var(--muted-strong)", textDecoration: "underline", textDecorationColor: "var(--line)" },
+  { tag: tags.monospace, color: "var(--accent-ink)" },
+  { tag: tags.quote, color: "var(--muted-strong)", fontStyle: "italic" },
+  { tag: [tags.meta, tags.comment], color: "var(--muted)" },
+  { tag: [tags.propertyName, tags.definition(tags.propertyName)], color: "var(--accent-ink)" },
+  { tag: [tags.string, tags.special(tags.string)], color: "var(--success)" },
+  { tag: [tags.number, tags.bool, tags.atom, tags.keyword], color: "var(--warning)" },
+  { tag: tags.invalid, color: "var(--danger)" }
+]);
+
+function editorTheme(dark: boolean) {
+  return EditorView.theme({
+    "&": { backgroundColor: "var(--surface)", color: "var(--text)" },
+    ".cm-content": { caretColor: "var(--accent)" },
+    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
+    ".cm-gutters": { backgroundColor: "transparent", color: "var(--muted)", border: "none" },
+    ".cm-panels": { backgroundColor: "var(--panel)", color: "var(--text)" },
+    ".cm-panels-top": { borderBottom: "1px solid var(--line)" },
+    ".cm-panels-bottom": { borderTop: "1px solid var(--line)" },
+    ".cm-textfield": { backgroundColor: "var(--surface)", border: "1px solid var(--line)", borderRadius: "5px", color: "var(--text)" },
+    ".cm-button": { backgroundImage: "none", backgroundColor: "var(--raised)", border: "1px solid var(--line)", borderRadius: "5px", color: "var(--text)" },
+    ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--warning) 22%, transparent)" },
+    ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "color-mix(in srgb, var(--accent) 30%, transparent)" },
+    ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": { backgroundColor: "var(--accent-soft)", outline: "none" },
+    ".cm-tooltip": { backgroundColor: "var(--raised)", border: "1px solid var(--line)", color: "var(--text)" }
+  }, { dark });
 }
