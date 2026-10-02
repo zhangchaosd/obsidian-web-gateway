@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-![Obsidian Web Gateway 界面预览](docs/assets/obsidian-web-gateway-preview.png)
+![Obsidian Web Gateway 界面预览](docs/assets/redesign/library-desktop.jpg)
 
 *界面中的 Vault 内容均为虚构演示数据。*
 
@@ -100,7 +100,9 @@ level = "info"
 
 ## 主要功能
 
-- 显式多标签工作区：左侧导航复用当前标签，只有点击 `+` 才创建新标签
+- 书籍式首页与真实笔记入口、暖纸色阅读界面、完整明暗主题
+- 支持阅读、编辑和分栏的专注模式，按 Escape 恢复工作区
+- 多标签工作区：左侧文件导航复用当前标签，`+` 打开新标签；Library 返回首页并保留已打开的草稿
 - 文件、搜索结果、Wiki Link 和 Backlinks 遵循“一个文件一个标签”，避免重复编辑器和过期副本
 - CodeMirror Markdown 编辑、精致阅读模式、自动保存、行号、字数统计、Outline 和 Backlinks
 - 全文搜索、Wiki Link 解析、图片嵌入、任务列表、表格与安全净化的 Markdown 预览
@@ -118,7 +120,7 @@ level = "info"
 
 鼠标移入预览中的代码块，或用键盘聚焦复制按钮，即可复制该代码块的完整代码。触摸设备直接显示复制按钮。
 
-![分栏实时预览](docs/assets/obsidian-web-gateway-split-preview.png)
+![分栏实时预览](docs/assets/redesign/split-desktop.jpg)
 
 ## Demo Vault
 

@@ -20,6 +20,9 @@ export function restorePreview(article: HTMLElement, position: ScrollPosition) {
   if (position.end) { article.scrollTop = article.scrollHeight; return; }
   if (position.line <= 1 && !position.fraction) { article.scrollTop = 0; return; }
   const blocks = Array.from(article.querySelectorAll<HTMLElement>("[data-source-start]"));
+  // Frontmatter has no rendered block: keep the opening page margin when the
+  // editor is still above the first visible Markdown element.
+  if (blocks[0] && position.line < Number(blocks[0].dataset.sourceStart)) { article.scrollTop = 0; return; }
   const block = blocks.filter(node => Number(node.dataset.sourceStart) <= position.line).at(-1) ?? blocks[0];
   if (!block) return;
   const start = Number(block.dataset.sourceStart);

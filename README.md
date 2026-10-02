@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-![Obsidian Web Gateway preview](docs/assets/obsidian-web-gateway-preview.png)
+![Obsidian Web Gateway preview](docs/assets/redesign/library-desktop.jpg)
 
 *The interface is shown with fictional Vault content.*
 
@@ -97,7 +97,9 @@ Supported environment variables are `OBSIDIAN_WEB_VAULT`, `OBSIDIAN_WEB_LISTEN`,
 
 ## Features
 
-- Explicit multi-tab workspace: sidebar navigation replaces the current tab, while `+` deliberately opens a new one
+- Editorial library home with real note shortcuts, warm reading surfaces, and light/dark themes
+- Focus mode for distraction-free reading or writing; Escape restores the workspace
+- Multi-tab workspace: sidebar files replace the current tab; `+` opens another, and Library returns home without discarding open drafts
 - One note per tab across files, search results, Wiki Links, and Backlinks, avoiding duplicate editors and stale copies
 - CodeMirror Markdown editing, polished reading mode, autosave, line controls, word counts, Outline, and Backlinks
 - Full-text search, Wiki Link resolution, image embeds, task lists, tables, and sanitized preview HTML
@@ -110,11 +112,11 @@ Supported environment variables are `OBSIDIAN_WEB_VAULT`, `OBSIDIAN_WEB_LISTEN`,
 
 Select **Split** on desktop to edit on the left and preview unsaved Markdown on the right. Updates follow a 200 ms typing pause (500 ms for notes over 100,000 characters). Preview does not save files: Save and Autosave control disk writes.
 
-Drag the divider to resize, double-click to reset, or use its arrow keys and Home/End. Split initially closes the context panel. Mobile retains Edit/Preview switching. Both panes scroll independently and preview updates preserve scroll position. Switching between Edit, Preview, and Split restores the corresponding content location using Markdown source-line anchors.
+Drag the divider to resize, double-click to reset, or use its arrow keys and Home/End. Split initially closes the context panel. Mobile retains Edit/Preview switching. Focus mode works with Edit, Preview, and Split; use the expand icon in the top bar or press Escape to leave focus mode. Both panes scroll independently and preview updates preserve scroll position. Switching between Edit, Preview, and Split restores the corresponding content location using Markdown source-line anchors.
 
 Hover over a code block or focus its copy button to copy the complete code. Touch devices always show the button.
 
-![Split preview](docs/assets/obsidian-web-gateway-split-preview.png)
+![Split preview](docs/assets/redesign/split-desktop.jpg)
 
 ## Demo vault
 

@@ -7,6 +7,7 @@ import { getOutline } from "./markdown";
 
 import { capturePreview, startPosition, type ScrollHandle, type ScrollPosition } from "./scrollPosition";
 import MarkdownPreview from "./MarkdownPreview";
+import VaultHome from "./VaultHome";
 import SplitDivider, { splitStyle } from "./SplitDivider";
 
 const MarkdownEditor = lazy(() => import("./MarkdownEditor"));
@@ -28,7 +29,7 @@ type MutationTarget = { path: string; type: "markdown" | "directory" };
 type MutationDialog = { kind: "file" | "directory" | "rename" | "delete"; value: string; target?: MutationTarget };
 type SavedWorkspace = { tabs: { path: string | null; mode: WorkspaceTab["mode"] }[]; active: number };
 const modKey = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl";
-type IconName = "archive" | "arrow-left" | "book" | "check" | "chevron" | "close" | "document" | "download" | "edit" | "external" | "file-plus" | "folder" | "folder-plus" | "info" | "key" | "link" | "menu" | "more" | "panel" | "preview" | "save" | "search" | "settings" | "sparkle" | "trash";
+type IconName = "focus" | "home" | "archive" | "arrow-left" | "book" | "check" | "chevron" | "close" | "document" | "download" | "edit" | "external" | "file-plus" | "folder" | "folder-plus" | "info" | "key" | "link" | "menu" | "more" | "panel" | "preview" | "save" | "search" | "settings" | "sparkle" | "trash";
 
 export default function App() {
   const [tabs, setTabsState] = useState<WorkspaceTab[]>(() => [newWorkspaceTab(1)]);
@@ -40,6 +41,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [connected, setConnected] = useState(false);
   const [drawer, setDrawer] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
   const [rightOpen, setRightOpen] = useState(() => window.innerWidth > 1050);
   const [contextTab, setContextTab] = useState<"outline" | "backlinks">("outline");
   const [pendingPath, setPendingPath] = useState<string | null>(null);
@@ -54,6 +56,8 @@ export default function App() {
   const [confirmation, setConfirmation] = useState<{ title: string; body: string; action: () => void } | null>(null);
   const [jump, setJump] = useState<{ line: number; sequence: number } | null>(null);
   const [activeHeading, setActiveHeading] = useState<number | null>(null);
+  const pendingHeadingFocus = useRef<{ path: string; line: number } | null>(null);
+  const [headingFocusSequence, setHeadingFocusSequence] = useState(0);
   const editorScrollRef = useRef<ScrollHandle | null>(null);
   const [scrollPosition, setScrollPosition] = useState<ScrollPosition>(startPosition);
   const previewRef = useRef<HTMLElement>(null);
@@ -84,7 +88,9 @@ export default function App() {
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0];
   const document = activeTab.document;
+  useEffect(() => { if (!document) setFocusMode(false); }, [document?.path]);
   const [compact, setCompact] = useState(() => window.innerWidth <= 760);
+  const [overlayContext, setOverlayContext] = useState(() => window.innerWidth <= 1050);
   const [splitRatio, setSplitRatioState] = useState(() => {
     const saved = Number(readStorage("owg-split-ratio"));
     return saved >= 30 && saved <= 70 ? saved : 50;
@@ -92,9 +98,11 @@ export default function App() {
   const setSplitRatio = useCallback((ratio: number) => { setSplitRatioState(ratio); writeStorage("owg-split-ratio", String(ratio)); }, []);
   useEffect(() => {
     const media = matchMedia("(max-width: 760px)");
-    const update = () => setCompact(media.matches);
+    const contextMedia = matchMedia("(max-width: 1050px)");
+    const update = () => { setCompact(media.matches); setOverlayContext(contextMedia.matches); };
     media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    contextMedia.addEventListener("change", update);
+    return () => { media.removeEventListener("change", update); contextMedia.removeEventListener("change", update); };
   }, []);
   const mode = compact && activeTab.mode === "split" ? "edit" : activeTab.mode;
   useEffect(() => { setScrollPosition({ ...startPosition }); }, [document?.path, activeTabId]);
@@ -282,9 +290,9 @@ export default function App() {
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
-      if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "p" || (event.shiftKey && event.key.toLowerCase() === "f"))) { event.preventDefault(); setDrawer(true); window.setTimeout(() => searchRef.current?.focus(), 0); }
+      if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "p" || (event.shiftKey && event.key.toLowerCase() === "f"))) { event.preventDefault(); setFocusMode(false); if (window.innerWidth <= 1050) setRightOpen(false); setDrawer(true); window.setTimeout(() => searchRef.current?.focus(), 0); }
       // The editor consumes Escape for its own panels (search, autocomplete).
-      if (event.key === "Escape" && !event.defaultPrevented) { setUpdatesOpen(false); setFolderMenu(null); setMutationDialog(null); setPendingPath(null); setPendingCloseTab(null); setConfirmation(null); setMenuOpen(false); setDrawer(false); if (window.innerWidth <= 1050) setRightOpen(false); }
+      if (event.key === "Escape" && !event.defaultPrevented) { setUpdatesOpen(false); setFolderMenu(null); setMutationDialog(null); setPendingPath(null); setPendingCloseTab(null); setConfirmation(null); setMenuOpen(false); setDrawer(false); setFocusMode(false); if (window.innerWidth <= 1050) setRightOpen(false); }
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
@@ -512,7 +520,8 @@ export default function App() {
     if (mode !== "edit") {
       const target = previewRef.current?.querySelector<HTMLElement>(`[data-line="${line}"]`);
       target?.scrollIntoView({ block: "start", behavior: "instant" });
-      target?.focus({ preventScroll: true });
+      pendingHeadingFocus.current = { path: document?.path ?? "", line };
+      setHeadingFocusSequence(value => value + 1);
     }
     if (window.innerWidth <= 1050) setRightOpen(false);
   };
@@ -591,6 +600,44 @@ export default function App() {
     return () => { cancelAnimationFrame(frame); window.document.removeEventListener("keydown", trap); if (previous?.isConnected) previous.focus(); };
   }, [modalKey]);
 
+  const contextVisible = rightOpen && !!document && !focusMode;
+  const mobilePanel = compact && drawer ? "files" : overlayContext && contextVisible ? "context" : null;
+  useEffect(() => {
+    if (!mobilePanel) return;
+    const previous = window.document.activeElement as HTMLElement | null;
+    const panel = window.document.querySelector<HTMLElement>(mobilePanel === "files" ? ".sidebar" : ".context-panel");
+    if (!panel) return;
+    const focusable = () => Array.from(panel.querySelectorAll<HTMLElement>('button:not(:disabled), input, a[href], summary')).filter(item => item.getClientRects().length);
+    const frame = requestAnimationFrame(() => {
+      // Quick search may already have focused its input before this frame.
+      if (!panel.contains(window.document.activeElement)) focusable()[0]?.focus();
+    });
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = focusable(); const first = items[0]; const last = items[items.length - 1];
+      if (event.shiftKey && (window.document.activeElement === first || !panel.contains(window.document.activeElement))) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && (window.document.activeElement === last || !panel.contains(window.document.activeElement))) { event.preventDefault(); first?.focus(); }
+    };
+    panel.addEventListener("keydown", trap);
+    return () => {
+      cancelAnimationFrame(frame);
+      panel.removeEventListener("keydown", trap);
+      const active = window.document.activeElement;
+      // Keep deliberate focus handoffs (an outline heading or quick search).
+      // Only return to the opener when focus is still in the closing panel.
+      if (previous?.isConnected && (!active || active === window.document.body || panel.contains(active))) previous.focus({ preventScroll: true });
+    };
+  }, [mobilePanel]);
+
+  useEffect(() => {
+    const pending = pendingHeadingFocus.current;
+    if (!pending || mobilePanel) return;
+    pendingHeadingFocus.current = null;
+    // Resolve the current heading after rendering and drawer cleanup. An old
+    // DOM reference may have been replaced by the Markdown preview's update.
+    if (pending.path === document?.path) previewRef.current?.querySelector<HTMLElement>(`[data-line="${pending.line}"]`)?.focus({ preventScroll: true });
+  }, [headingFocusSequence, mobilePanel, document?.path]);
+
   if (!system) return <LoadingState error={error} />;
   if (!authenticated) return <Login vault={system.vault.name} methods={system.auth ?? { password: true, username: false, passkey: false }} onSuccess={boot} error={error} />;
 
@@ -601,11 +648,15 @@ export default function App() {
     else void signOut();
   };
 
-  return <div className={`app-shell ${rightOpen ? "context-open" : ""} ${mode === "preview" ? "reading-mode" : "editing-mode"}`}>
-    <header className="topbar">
+  const openSearch = () => { setFocusMode(false); if (window.innerWidth <= 1050) setRightOpen(false); setDrawer(true); window.setTimeout(() => searchRef.current?.focus(), 0); };
+  const goHome = () => { const home = tabs.find(tab => !tab.document); if (home) activateTab(home.id); else createNewTab(); setDrawer(false); setFocusMode(false); };
+
+  return <div className={`app-shell ${contextVisible ? "context-open" : ""} ${!document ? "is-home" : ""} ${focusMode ? "focus-mode" : ""} ${mode === "preview" ? "reading-mode" : "editing-mode"}`}>
+    <a className="skip-link" href="#workspace">Skip to workspace</a>
+    <header className="topbar" inert={!!mobilePanel}>
       <div className="topbar-leading">
-        <button className="icon-button mobile-only" onClick={() => setDrawer(true)} aria-label="Open files"><Icon name="menu" /></button>
-        <div className="document-location"><span>{parentPath}</span><strong title={document?.path ?? system.vault.name}>{document?.path ?? system.vault.name}</strong></div>
+        <button className="icon-button mobile-only" onClick={() => { setFocusMode(false); setRightOpen(false); setDrawer(true); }} aria-label="Open files"><Icon name="menu" /></button>
+        <div className="document-location"><span>{document ? parentPath : "A space of your own"}</span><strong title={document?.path ?? system.vault.name}>{document?.path ?? system.vault.name}</strong></div>
       </div>
       <div className="top-actions">
         <div className={`sync-state ${connected ? "online" : "offline"}`} title={connected ? "Live updates connected" : "Connection lost; reconnecting"}><span className="sync-dot" /><span>{connected ? "Connected" : "Reconnecting"}</span></div>
@@ -615,13 +666,16 @@ export default function App() {
           <button className={mode === "preview" ? "active" : ""} onClick={() => setMode("preview")} aria-pressed={mode === "preview"}><Icon name="preview" /> Preview</button>
           {!compact && <button className={mode === "split" ? "active" : ""} onClick={() => setMode("split")} aria-pressed={mode === "split"}><Icon name="panel" /> Split</button>}
         </div>}
-        <button className={`icon-button ${rightOpen ? "active" : ""}`} onClick={() => { setRightOpen(value => !value); setDrawer(false); }} aria-label="Toggle context panel" aria-pressed={rightOpen}><Icon name="panel" /></button>
+        {document && <button className={`icon-button focus-button ${focusMode ? "active" : ""}`} onClick={() => setFocusMode(value => !value)} aria-label={focusMode ? "Exit focus mode" : "Enter focus mode"} title={focusMode ? "Exit focus mode (Esc)" : "Focus mode"} aria-pressed={focusMode}><Icon name="focus" /></button>}
+        {document && <button className={`icon-button ${contextVisible ? "active" : ""}`} onClick={() => { setFocusMode(false); setRightOpen(!contextVisible); setDrawer(false); }} aria-label="Toggle context panel" aria-pressed={contextVisible}><Icon name="panel" /></button>}
         {system.authRequired && <button className="icon-button" onClick={requestSignOut} aria-label="Sign out"><Icon name="external" /></button>}
       </div>
     </header>
 
-    <aside className={`sidebar ${drawer ? "open" : ""}`}>
-      <div className="vault-header"><div className="vault-mark"><Icon name="sparkle" /></div><div><strong>{system.vault.name}</strong><span>{noteCount} notes · local vault</span></div><button className={`icon-button settings-button ${updateStatus?.available ? "has-update" : ""}`} onClick={() => { setUpdatesOpen(true); setDrawer(false); }} aria-label={updateStatus?.available ? `About and updates, version ${updateStatus.latest?.version} available` : "About and updates"} title={updateStatus?.available ? `Update available: v${updateStatus.latest?.version}` : "About and updates"}><Icon name="settings" /></button><button className="icon-button mobile-only" onClick={() => setDrawer(false)} aria-label="Close files"><Icon name="close" /></button></div>
+    <aside className={`sidebar ${drawer ? "open" : ""}`} aria-label="Library navigation" inert={(compact && !drawer) || mobilePanel === "context" || focusMode}>
+      <div className="brand"><BrandMark /><span>Obsidian<span>WEB GATEWAY</span></span><span className="brand-edition">/ 01</span></div>
+      <div className="vault-header"><div className="vault-mark"><Icon name="book" /></div><div><strong>{system.vault.name}</strong><span>{noteCount} {noteCount === 1 ? "note" : "notes"} · local vault</span></div><button className={`icon-button settings-button ${updateStatus?.available ? "has-update" : ""}`} onClick={() => { setUpdatesOpen(true); setDrawer(false); }} aria-label={updateStatus?.available ? `About and updates, version ${updateStatus.latest?.version} available` : "About and updates"} title={updateStatus?.available ? `Update available: v${updateStatus.latest?.version}` : "About and updates"}><Icon name="settings" /></button><button className="icon-button mobile-only" onClick={() => setDrawer(false)} aria-label="Close files"><Icon name="close" /></button></div>
+      <button className={`sidebar-home ${!document ? "active" : ""}`} onClick={goHome} aria-label="Library home" aria-current={!document ? "page" : undefined}><Icon name="home" /><span>Library</span><span className="home-count">{String(noteCount).padStart(2, "0")}</span></button>
       <form className="search-box" onSubmit={event => { event.preventDefault(); void runSearch(search); }}>
         <Icon name="search" /><input ref={searchRef} value={search} onChange={event => changeSearch(event.target.value)} placeholder="Search notes" aria-label="Search vault" />
         {search ? <button type="button" onClick={resetSearch} aria-label="Clear search"><Icon name="close" /></button> : <kbd>{modKey} P</kbd>}
@@ -629,17 +683,26 @@ export default function App() {
       <div className={`sidebar-section-label root-drop-target ${draggedPath && dropTarget === "" ? "drop-active" : ""}`} onDragOver={event => { if (!draggedPath) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); }} onDrop={event => { event.preventDefault(); const path = draggedPath ?? event.dataTransfer.getData("text/plain"); if (path) void moveFile(path, ""); }}><span>{searchState !== "idle" ? "Search results" : draggedPath ? "Move to Vault root" : "Your files"}</span>{searchState !== "idle" && !draggedPath && <button onClick={resetSearch}><Icon name="arrow-left" /> All files</button>}</div>
       {draggedPath && <div className="drag-help" role="status">Drop on a folder, or above to move to the root</div>}
       <div className="sidebar-scroll">{searchState === "loading" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>Searching your vault…</strong></div> : searchState === "error" ? <div className="search-feedback" role="status"><Icon name="info" /><strong>Search failed</strong><button onClick={() => void runSearch(search)}>Try again</button></div> : searchState === "done" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>No notes found</strong><p>Try another word or a shorter phrase.</p><button onClick={resetSearch}>Clear search</button></div> : results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} folderMenu={folderMenu} onFolderMenu={setFolderMenu} onFolderAction={(kind, path) => openMutation(kind, { path, type: "directory" })} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}</div>
+      <div className="sidebar-colophon"><span className="colophon-symbol">✳</span><p>A quiet place for<br /><em>your next idea.</em></p><span>YOUR NOTES. YOUR SPACE.</span></div>
       {!system.features.readOnly && <div className="file-actions"><button onClick={() => openMutation("file")}><Icon name="file-plus" /> New note</button><button className="icon-button" onClick={() => openMutation("directory")} aria-label="New folder"><Icon name="folder-plus" /></button></div>}
     </aside>
-    {rightOpen && <button className="context-scrim" onClick={() => setRightOpen(false)} aria-label="Close context panel" />}
+    {contextVisible && <button className="context-scrim" onClick={() => setRightOpen(false)} aria-label="Close context panel" />}
     {drawer && <button className="scrim mobile-only" onClick={() => setDrawer(false)} aria-label="Close files" />}
 
-    <main className="workspace" onClick={() => { if (menuOpen) setMenuOpen(false); }}>
-      <div className="tab-strip" role="tablist" aria-label="Open notes">
+    <main className="workspace" id="workspace" tabIndex={-1} inert={!!mobilePanel} onClick={() => { if (menuOpen) setMenuOpen(false); }}>
+      <div className="tab-strip" role="tablist" aria-label="Open notes" onKeyDown={event => {
+        if ((event.target as HTMLElement).getAttribute("role") !== "tab") return;
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const current = tabs.findIndex(tab => tab.id === activeTabId);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        activateTab(tabs[next].id);
+        event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+      }}>
         <div className="tab-scroll">{tabs.map(tab => {
           const tabTitle = tab.document ? fileTitle(tab.document.path) : "New tab";
           return <div className={`workspace-tab ${tab.id === activeTabId ? "active" : ""}`} key={tab.id}>
-            <button className="tab-button" role="tab" aria-label={tabTitle} aria-selected={tab.id === activeTabId} title={tab.document?.path ?? "Empty tab"} onClick={() => activateTab(tab.id)}><Icon name={tab.document ? "document" : "book"} /><span>{tabTitle}</span>{tab.document?.dirty && <span className="tab-dirty" title="Unsaved changes" />}</button>
+            <button className="tab-button" role="tab" tabIndex={tab.id === activeTabId ? 0 : -1} aria-label={tabTitle} aria-selected={tab.id === activeTabId} title={tab.document?.path ?? "Empty tab"} onClick={() => activateTab(tab.id)}><Icon name={tab.document ? "document" : "book"} /><span>{tab.document ? tabTitle : "Library"}</span>{tab.document?.dirty && <span className="tab-dirty" title="Unsaved changes" />}</button>
             <button className="tab-close" onClick={() => requestCloseTab(tab.id)} aria-label={`Close ${tabTitle}`}><Icon name="close" /></button>
           </div>;
         })}</div>
@@ -651,7 +714,7 @@ export default function App() {
         <div className="document-toolbar">
           <div className={`save-state ${document.dirty ? "dirty" : ""}`}><span role="status">{document.externalChangeDetected ? "Conflict" : status === "Saving" ? "Saving…" : document.dirty ? "● Unsaved" : "✓ Saved"}</span></div>
           <div className="document-stats"><span>{wordCount} words</span><span>{outline.length} headings</span></div>
-          <div className="toolbar-actions"><label className={`toggle-label ${system.features.readOnly ? "hidden" : ""}`}><input disabled={system.features.readOnly} type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); writeStorage("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode !== "preview" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); writeStorage("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty || status === "Saving"}><Icon name="save" /> Save</button>}<div className="note-menu"><button className="icon-button" aria-label="Note actions" aria-expanded={menuOpen} onClick={event => { event.stopPropagation(); setMenuOpen(value => !value); }}><Icon name="more" /></button>{menuOpen && <div className="note-menu-popover"><span>Note actions</span>{!system.features.readOnly && <><button onClick={() => openMutation("rename", noteTarget)}><Icon name="edit" /> Rename or move note</button><button className="danger" onClick={() => openMutation("delete", noteTarget)}><Icon name="trash" /> Move note to trash</button></>}<button onClick={() => { setRightOpen(true); setMenuOpen(false); }}><Icon name="panel" /> Outline & backlinks</button></div>}</div></div>
+          <div className="toolbar-actions"><label className={`toggle-label ${system.features.readOnly ? "hidden" : ""}`}><input disabled={system.features.readOnly} type="checkbox" checked={autosave} onChange={event => { setAutosave(event.target.checked); writeStorage("owg-autosave", String(event.target.checked)); }} /><span className="toggle" /> Autosave</label>{mode !== "preview" && <label className="compact-check"><input type="checkbox" checked={lineNumbers} onChange={event => { setLineNumbers(event.target.checked); writeStorage("owg-line-numbers", String(event.target.checked)); }} /> Lines</label>}{!system.features.readOnly && <button className="primary-button" onClick={() => void save()} disabled={!document.dirty || status === "Saving"}><Icon name="save" /> Save</button>}<div className="note-menu"><button className="icon-button" aria-label="Note actions" aria-expanded={menuOpen} onClick={event => { event.stopPropagation(); setMenuOpen(value => !value); }}><Icon name="more" /></button>{menuOpen && <div className="note-menu-popover"><span>Note actions</span>{!system.features.readOnly && <><button onClick={() => openMutation("rename", noteTarget)}><Icon name="edit" /> Rename or move note</button><button className="danger" onClick={() => openMutation("delete", noteTarget)}><Icon name="trash" /> Move note to trash</button></>}<button onClick={() => { setFocusMode(false); setRightOpen(true); setMenuOpen(false); }}><Icon name="panel" /> Outline & backlinks</button></div>}</div></div>
         </div>
         {showDiff && document.externalContent !== undefined ? <div className="diff-view"><section><h2>Your draft</h2><pre>{document.content}</pre></section><section><h2>Version on disk</h2><pre>{document.externalContent}</pre></section><button onClick={() => setShowDiff(false)}>Close comparison</button></div> : <div className={`document-panes ${mode === "split" ? "is-split" : ""}`} style={splitStyle(splitRatio)}>
           {mode !== "preview" && <div key="editor" className="editor-pane">{mode === "split" && <div className="pane-caption"><Icon name="edit" /> Editor <span>Markdown</span></div>}<Suspense fallback={<div className="editor-loading" role="status">Opening editor…</div>}><MarkdownEditor position={scrollPosition} scrollHandle={editorScrollRef} key={document.path} value={document.content} lineNumbers={lineNumbers} readOnly={system.features.readOnly} jump={jump} onChange={content => setDocument(value => value ? { ...value, content, dirty: content !== value.savedContent } : value)} /></Suspense></div>}
@@ -659,11 +722,13 @@ export default function App() {
           {mode !== "edit" && <div key="preview" className="preview-pane">{mode === "split" && <div className="pane-caption"><Icon name="preview" /> Preview <span><i /> Live draft</span></div>}<MarkdownPreview position={scrollPosition} key={document.path} content={document.content} path={document.path} articleRef={previewRef} onWiki={target => void navigateWiki(target)} /></div>}
         </div>}
 
-      </> : <EmptyVault vault={system.vault.name} readOnly={system.features.readOnly} compact={compact} onBrowse={() => setDrawer(true)} onCreate={() => openMutation("file")} />}
+      </> : <VaultHome vault={system.vault.name} entries={tree} readOnly={system.features.readOnly} onOpen={requestOpen} onSearch={openSearch} onCreate={() => openMutation("file")} />}
+      {document && <footer className="workspace-footer"><span><span className="footer-dot" /> {mode === "preview" ? "READING ROOM" : mode === "split" ? "WORDS & THEIR FORM" : "A LITTLE SPACE TO THINK"}</span><span>{Math.max(1, Math.ceil(wordCount / 220))} MIN READ <span className="footer-divider">/</span> MARKDOWN <span className="footer-divider">/</span> {focusMode ? "ESC TO LEAVE FOCUS" : system.features.readOnly ? "READ ONLY" : `${modKey} S TO SAVE`}</span></footer>}
     </main>
 
-    {rightOpen && <aside className="context-panel">
+    {contextVisible && <aside className="context-panel">
       <div className="context-tabs" role="tablist" aria-label="Note context"><button className="icon-button context-close" aria-label="Hide context panel" onClick={() => setRightOpen(false)}><Icon name="close" /></button><button className={contextTab === "outline" ? "active" : ""} onClick={() => setContextTab("outline")} role="tab" aria-selected={contextTab === "outline"}>Outline</button><button className={contextTab === "backlinks" ? "active" : ""} onClick={() => setContextTab("backlinks")} role="tab" aria-selected={contextTab === "backlinks"}>Backlinks <span>{backlinks.length}</span></button></div>
+      <div className="context-section-label">{contextTab === "outline" ? "ON THIS PAGE" : "CONNECTED THOUGHTS"}<span>{String(contextTab === "outline" ? outline.length : backlinks.length).padStart(2, "0")}</span></div>
       {document ? contextTab === "outline" ? <section className="outline-list">{outline.length ? outline.map(item => <button aria-current={activeHeading === item.line ? "location" : undefined} onClick={() => jumpToHeading(item.line)} key={`${item.line}-${item.text}`} style={{ paddingLeft: `${14 + (item.level - 1) * 12}px` }}><span>{item.text}</span><small>{item.line}</small></button>) : <ContextEmpty icon="book" title="No headings yet" body="Add a heading to create an outline." />}</section> : <section className="backlinks-list">{backlinks.length ? backlinks.map(item => <button className="backlink" key={item.path} onClick={() => requestOpen(item.path)}><span className="backlink-icon"><Icon name="link" /></span><span><strong>{fileTitle(item.path)}</strong><small>{item.references[0]?.context}</small></span></button>) : <ContextEmpty icon="link" title="No backlinks" body="Links to this note will appear here." />}</section> : <ContextEmpty icon="book" title="Nothing selected" body="Open a note to see its outline and backlinks." />}
       {document && <div className="note-metadata"><span>Note details</span><dl><div><dt>Location</dt><dd>{parentPath}</dd></div><div><dt>Words</dt><dd>{wordCount}</dd></div><div><dt>Format</dt><dd>Markdown</dd></div></dl></div>}
     </aside>}
@@ -722,8 +787,8 @@ function MutationModal({ busy, error, dialog, onChange, onClose, onSubmit }: { b
   return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="mutation-title" onSubmit={onSubmit}><div className={`modal-icon ${destructive ? "danger" : ""}`}><Icon name={copy.icon} /></div><h2 id="mutation-title">{copy.title}</h2><p>{copy.body}</p>{error && <p className="login-error" role="alert">{error}</p>}{!destructive && <label className="field-label">{copy.label}<input autoFocus value={dialog.value} onChange={event => onChange(event.target.value)} placeholder={copy.placeholder} /></label>}<div className="modal-actions"><button type="button" onClick={onClose}>Cancel</button><button className={destructive ? "danger-button" : "primary-button"} type="submit" disabled={busy || (!destructive && !dialog.value.trim())}>{copy.action}</button></div></form></div>;
 }
 
-function EmptyVault({ vault, readOnly, compact, onBrowse, onCreate }: { vault: string; readOnly: boolean; compact: boolean; onBrowse: () => void; onCreate: () => void }) {
-  return <div className="empty-state"><div className="empty-illustration"><span /><Icon name="book" /></div><span className="eyebrow">Welcome to your workspace</span><h1>{vault}</h1><p>{compact ? "Browse your files to start reading" : "Select a note from the sidebar to start reading"}{readOnly ? "." : ", or capture a new idea."}</p><div className="empty-actions">{compact && <button className="secondary-button" onClick={onBrowse}><Icon name="folder" /> Browse files</button>}{!readOnly && <button className="primary-button" onClick={onCreate}><Icon name="file-plus" /> Create a note</button>}</div><div className="shortcut-hint"><kbd>{modKey} P</kbd><span>Quick search</span><kbd>{modKey} S</kbd><span>Save note</span></div></div>;
+function BrandMark() {
+  return <svg className="brand-mark" viewBox="0 0 40 44" fill="none" aria-hidden="true"><path d="M20 2 36 11v22L20 42 4 33V11Z" stroke="currentColor" strokeWidth="1.1"/><path d="m20 2 8 13-8 27-8-13Zm-8 27 24-18M4 33l24-18M4 11l16 7 16 15" stroke="currentColor" strokeWidth="1.1"/><path d="m20 18 8-3-8 27Z" fill="currentColor" opacity=".15"/></svg>;
 }
 
 function ConnectionNote() {
@@ -763,8 +828,8 @@ function Login({ vault, methods, onSuccess, error }: { vault: string; methods: N
     finally { setSubmitting(""); }
   };
   const busyLabel = cooldown ? "Try again in a moment" : null;
-  return <main className="login-screen"><div className="login-ambient" /><form className="login-card" onSubmit={submit}>
-    <div className="vault-mark large"><Icon name="sparkle" /></div><span className="eyebrow">Obsidian Web Gateway</span><h1>Welcome back</h1>
+  return <main className="login-screen"><section className="login-story" aria-label="Obsidian Web Gateway"><div className="brand"><BrandMark /><span>Obsidian<span>WEB GATEWAY</span></span></div><div className="login-story-copy"><span className="eyebrow">A SPACE OF YOUR OWN</span><h2>Good things<br />begin with<br /><em>a thought.</em></h2><p>Keep it. Connect it. Make it yours.</p></div><div className="login-orbits" aria-hidden="true">{Array.from({ length: 12 }, (_, i) => <span key={i} style={{ transform: `rotate(${i * 15}deg)` }} />)}</div><div className="login-story-footer"><span>YOUR NOTES. YOUR SPACE.</span><span>PLAIN TEXT. OPEN POSSIBILITIES.</span></div></section><div className="login-form-side"><form className="login-card" onSubmit={submit}>
+    <div className="login-form-heading"><span className="eyebrow">YOUR PRIVATE LIBRARY</span><span className="login-section-number">01 — ACCESS</span></div><h1>Welcome<br /><em>back.</em></h1>
     <p>Sign in to open <strong>{vault}</strong>. Notes stay on the machine running this gateway.</p>
     <label className="remember-option"><input type="checkbox" checked={remember} onChange={event => changeRemember(event.target.checked)} /><span><strong>Keep me signed in for 30 days</strong><small>{remember ? "Stay signed in on this browser, even after restarts. Don’t use on shared computers." : "You’ll be signed out when you close the browser."}</small></span></label>
     {methods.passkey && <button className="primary-button login-button passkey-button" type="button" onClick={() => void signInWithPasskey()} disabled={!!submitting || cooldown}><Icon name="key" /> {submitting === "passkey" ? "Waiting for your passkey…" : busyLabel ?? "Sign in with a passkey"}</button>}
@@ -776,7 +841,7 @@ function Login({ vault, methods, onSuccess, error }: { vault: string; methods: N
     {message && <p className="login-error" role="alert"><Icon name="info" />{message}</p>}
     {methods.password && <button className={`${methods.passkey ? "secondary-button" : "primary-button"} login-button`} type="submit" disabled={!!submitting || cooldown || !password || (methods.username && !username.trim())}>{submitting === "password" ? "Opening vault…" : busyLabel ?? "Open vault"}</button>}
     <ConnectionNote />
-  </form></main>;
+  </form><div className="login-form-footer">A small gateway to a world of ideas.</div></div></main>;
 }
 
 function UpdatesDialog({ status, version, hasDrafts, onStatus, onClose }: { status: UpdateStatus | null; version: string; hasDrafts: boolean; onStatus: (status: UpdateStatus) => void; onClose: () => void }) {
@@ -858,6 +923,7 @@ function UpdatesDialog({ status, version, hasDrafts, onStatus, onClose }: { stat
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, React.ReactNode> = {
+    focus: <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/>, home: <><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9 21v-8h6v8"/></>,
     archive: <><rect x="4" y="5" width="16" height="4" rx="1"/><path d="M6 9v10h12V9M10 13h4"/></>, "arrow-left": <><path d="m15 18-6-6 6-6"/><path d="M9 12h10"/></>, book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></>, check: <path d="m5 12 4 4L19 6"/>, chevron: <path d="m9 18 6-6-6-6"/>, close: <><path d="m6 6 12 12"/><path d="M18 6 6 18"/></>, document: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></>, download: <><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></>, key: <><circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 9-9M16 7l3 3M14 9l2 2"/></>, settings: <><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/></>, edit: <><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></>, external: <><path d="M10 17l5-5-5-5"/><path d="M15 12H3M21 19V5a2 2 0 0 0-2-2h-6"/></>, "file-plus": <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M12 18v-6M9 15h6"/></>, folder: <path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>, "folder-plus": <><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M12 11v6M9 14h6"/></>, info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></>, link: <><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1-1"/></>, menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>, more: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>, panel: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></>, preview: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></>, save: <><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></>, search: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></>, sparkle: <path d="m12 2 1.7 5.3L19 9l-5.3 1.7L12 16l-1.7-5.3L5 9l5.3-1.7ZM5 16l.8 2.2L8 19l-2.2.8L5 22l-.8-2.2L2 19l2.2-.8Z"/>, trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/></>
   };
   return <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;

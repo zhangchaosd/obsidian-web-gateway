@@ -30,7 +30,11 @@ export default function MarkdownEditor({ value, lineNumbers, readOnly, jump, pos
   } }), []);
   const restore = useCallback((view: EditorView) => {
     const line = view.state.doc.line(Math.min(position.line, view.state.doc.lines));
-    view.dispatch({ effects: EditorView.scrollIntoView(position.end ? view.state.doc.length : line.from, { y: position.end ? "end" : "start", yMargin: 0 }) });
+    // At the document start, a pending scrollIntoView would run after measurement
+    // and consume the editor's top padding. Let the measurement restore zero.
+    if (position.end || position.line > 1 || position.fraction) {
+      view.dispatch({ effects: EditorView.scrollIntoView(position.end ? view.state.doc.length : line.from, { y: position.end ? "end" : "start", yMargin: 0 }) });
+    }
     let passes = 3;
     const measure = { read: () => {
       const block = view.lineBlockAt(view.state.doc.line(Math.min(position.line, view.state.doc.lines)).from);
