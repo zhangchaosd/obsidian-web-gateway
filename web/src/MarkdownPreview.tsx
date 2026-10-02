@@ -15,6 +15,9 @@ export default function MarkdownPreview({ content, path, articleRef, position, o
   }, [content]);
   useEffect(() => () => { for (const timer of timers.current) clearTimeout(timer); }, []);
   const html = useMemo(() => renderMarkdown(renderedContent, path), [renderedContent, path]);
+  // React compares this prop by identity; a fresh object would rewrite innerHTML
+  // on every parent render, discarding focus, selection, and copy feedback.
+  const markup = useMemo(() => ({ __html: html }), [html]);
   const previousHtml = useRef<string | null>(null);
   const scrollTop = articleRef.current?.scrollTop ?? 0;
   const scrollLeft = articleRef.current?.scrollLeft ?? 0;
@@ -74,7 +77,7 @@ export default function MarkdownPreview({ content, path, articleRef, position, o
     if (button) { void copy(button); return; }
     const target = element.closest<HTMLElement>("[data-wiki]")?.dataset.wiki;
     if (target) onWiki(target);
-  }} dangerouslySetInnerHTML={{ __html: html }} />;
+  }} dangerouslySetInnerHTML={markup} />;
 }
 
 async function copyText(text: string): Promise<void> {

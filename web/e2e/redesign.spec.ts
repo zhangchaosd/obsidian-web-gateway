@@ -263,7 +263,7 @@ test("Library home keeps dirty notes and reuses its existing tab", async ({ page
   await page.getByRole("tab", { name: noteTitle, exact: true }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(page.locator(".app-shell")).toHaveClass(/is-home/);
-  await expect(page.getByRole("tab", { name: "New tab", exact: true })).toBeFocused();
+  await expect(page.getByRole("tab", { name: "Library", exact: true })).toBeFocused();
   await page.keyboard.press("ArrowLeft");
   await expect(page.getByRole("tab", { name: noteTitle, exact: true })).toBeFocused();
   await expect(page.locator(".cm-content")).toHaveText("An unsaved idea must survive the trip home.");
@@ -384,4 +384,29 @@ test("resizing a desktop context panel into an overlay protects keyboard focus",
   await expect(page.locator(".topbar")).toHaveJSProperty("inert", false);
   await expect(page.locator(".workspace")).toHaveJSProperty("inert", false);
   await expect(page.locator(".sidebar")).toHaveJSProperty("inert", false);
+});
+
+test("preview content is not rebuilt when unrelated workspace state changes", async ({ page }, info) => {
+  test.skip(!info.project.name.startsWith("desktop"), "Desktop context panel toggles without an overlay");
+  await mockVault(page);
+  await page.goto("/");
+  await openNote(page);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  const heading = page.locator(".preview").getByRole("heading", { name: "Working notes", exact: true });
+  await heading.evaluate(element => { (element as HTMLElement & { marker?: boolean }).marker = true; });
+  // Toggling the context panel re-renders the workspace but not the Markdown.
+  await page.getByRole("button", { name: "Toggle context panel", exact: true }).click();
+  await page.getByRole("button", { name: "Toggle context panel", exact: true }).click();
+  expect(await heading.evaluate(element => (element as HTMLElement & { marker?: boolean }).marker === true)).toBe(true);
+});
+
+test("the file tree keeps its room on shorter desktop screens", async ({ page }, info) => {
+  test.skip(!info.project.name.startsWith("desktop"), "Desktop sidebar layout");
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await mockVault(page);
+  await page.goto("/");
+  await expect(page.locator(".sidebar-colophon")).toBeHidden();
+  expect(await page.locator(".sidebar-scroll").evaluate(element => element.clientHeight)).toBeGreaterThan(250);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await expect(page.locator(".sidebar-colophon")).toBeVisible();
 });

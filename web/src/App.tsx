@@ -700,9 +700,9 @@ export default function App() {
         event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
       }}>
         <div className="tab-scroll">{tabs.map(tab => {
-          const tabTitle = tab.document ? fileTitle(tab.document.path) : "New tab";
+          const tabTitle = tab.document ? fileTitle(tab.document.path) : "Library";
           return <div className={`workspace-tab ${tab.id === activeTabId ? "active" : ""}`} key={tab.id}>
-            <button className="tab-button" role="tab" tabIndex={tab.id === activeTabId ? 0 : -1} aria-label={tabTitle} aria-selected={tab.id === activeTabId} title={tab.document?.path ?? "Empty tab"} onClick={() => activateTab(tab.id)}><Icon name={tab.document ? "document" : "book"} /><span>{tab.document ? tabTitle : "Library"}</span>{tab.document?.dirty && <span className="tab-dirty" title="Unsaved changes" />}</button>
+            <button className="tab-button" role="tab" tabIndex={tab.id === activeTabId ? 0 : -1} aria-label={tabTitle} aria-selected={tab.id === activeTabId} title={tab.document?.path ?? "Library home"} onClick={() => activateTab(tab.id)}><Icon name={tab.document ? "document" : "book"} /><span>{tabTitle}</span>{tab.document?.dirty && <span className="tab-dirty" title="Unsaved changes" />}</button>
             <button className="tab-close" onClick={() => requestCloseTab(tab.id)} aria-label={`Close ${tabTitle}`}><Icon name="close" /></button>
           </div>;
         })}</div>

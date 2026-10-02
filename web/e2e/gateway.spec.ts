@@ -35,7 +35,7 @@ test("opens sidebar files in the current tab unless a new tab was explicitly add
   await expect(page.getByRole("tablist", { name: "Open notes" }).getByRole("tab")).toHaveCount(1);
 
   await page.getByRole("button", { name: "New tab", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "New tab", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Library", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tablist", { name: "Open notes" }).getByRole("tab")).toHaveCount(2);
 
   await openFiles();
@@ -84,7 +84,7 @@ test("protects an unsaved draft when its tab is closed", async ({ page }, testIn
 
   await page.getByRole("button", { name: "Close Home" }).click();
   await page.getByRole("button", { name: "Discard & close" }).click();
-  await expect(page.getByRole("tab", { name: "New tab" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Library" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("keeps the save toolbar visible while a long unsaved note scrolls", async ({ page }, testInfo) => {

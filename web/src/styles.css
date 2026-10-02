@@ -521,8 +521,8 @@ button, a, input { transition: background-color .18s ease, border-color .18s eas
 .login-card .field-label input { height: 48px; background: transparent; }
 .login-button { min-height: 48px; border-radius: 4px; }
 .login-form-footer { flex: none; margin-top: 60px; color: var(--muted); font: italic 14px var(--serif); }
-@media (max-height: 850px) and (min-width: 761px) { .sidebar-colophon { padding-top: 16px; padding-bottom: 20px; } .sidebar-colophon p { font-size: 18px; margin-block: 8px 12px; } }
-@media (max-height: 650px) { .sidebar-colophon { display: none; } }
+/* The colophon is decorative; on shorter screens the file tree needs the room. */
+@media (max-height: 860px) { .sidebar-colophon { display: none; } }
 @media (max-width: 1200px) { .top-actions { gap: 5px; } .sync-state { font-size: 0; margin-right: 3px; } .document-toolbar { padding-inline: 20px; gap: 10px; } .toolbar-actions { gap: 8px; } }
 @media (max-width: 1050px) { .context-panel { background: var(--surface); } .context-section-label { font-size: 10px; } .login-story { padding-inline: 30px; } .workspace-footer { padding-inline: 20px; } .workspace-footer > span:last-child { font-size: 7px; } }
 @media (max-width: 760px) {
