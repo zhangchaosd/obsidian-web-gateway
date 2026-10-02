@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0 — 2026-10-02
+
+- Redesigned the workspace as a private editorial library: a Library home with shortcuts to real notes, warm reading surfaces, a new brand mark and favicon, and refreshed light and dark themes.
+- Focus mode hides the sidebar, tabs, and context panel for distraction-free reading, editing, or split view; press Escape or the focus button to return.
+- Redesigned login page with the existing passkey, username, and 30-day sign-in options.
+- Library returns to the home tab without closing open drafts; empty tabs are named "Library", including for screen readers.
+- Keyboard and screen-reader improvements: a skip link, arrow-key navigation between tabs, and focus kept inside the mobile file drawer and context overlay.
+- Fixed the preview being rebuilt on every workspace update, which discarded focus, text selection, and code-copy feedback.
+- The decorative sidebar text is hidden on screens 860px tall or less so the file tree keeps its room.
+- Opening a note in preview now keeps the top margin when the document begins with frontmatter.
+
 ## 0.5.0 — 2026-10-01
 
 - Passkey login compatible with bookmarkd: point `--passkey-db` at a copy of bookmarkd's `auth.db` (or the shared file) and set `--public-url`; passkeys registered for the shared RP ID sign in without re-registration. Verification uses bookmarkd's own `bookmarkd-auth` crate.
