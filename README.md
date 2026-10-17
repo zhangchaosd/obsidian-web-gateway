@@ -97,7 +97,7 @@ Supported environment variables are `OBSIDIAN_WEB_VAULT`, `OBSIDIAN_WEB_LISTEN`,
 
 ## Features
 
-- Editorial library home with real note shortcuts, warm reading surfaces, and light/dark themes
+- Editorial library home with real note shortcuts, warm reading surfaces, and three color themes (Forest, Ink, Plum), each in light and dark
 - Focus mode for distraction-free reading or writing; Escape restores the workspace
 - Multi-tab workspace: sidebar files replace the current tab; `+` opens another, and Library returns home without discarding open drafts
 - One note per tab across files, search results, Wiki Links, and Backlinks, avoiding duplicate editors and stale copies
@@ -188,7 +188,7 @@ Passkeys are registered, renamed, and revoked in bookmarkd. A copy is a snapshot
 
 ## Updates
 
-Open **About and updates** (the gear next to the Vault name) to see the running version, check GitHub Releases, read release notes, and install. Installing downloads this platform's archive, verifies it against `SHA256SUMS.txt`, checks that the new binary runs and reports the expected version, replaces the executable (keeping the previous one as `obsidian-web.old`), and restarts in place with the same arguments and PID, so systemd and similar managers keep tracking it. Signed-in browsers stay signed in. Save open drafts first; the button stays disabled while any are unsaved.
+Open **Settings** (the gear next to the Vault name) to choose a color theme and to see the running version, check GitHub Releases, read release notes, and install. Installing downloads this platform's archive, verifies it against `SHA256SUMS.txt`, checks that the new binary runs and reports the expected version, replaces the executable (keeping the previous one as `obsidian-web.old`), and restarts in place with the same arguments and PID, so systemd and similar managers keep tracking it. Signed-in browsers stay signed in. Save open drafts first; the button stays disabled while any are unsaved.
 
 Optional daily or weekly checks only report new versions; installing always needs confirmation. Update settings are stored in `update.json` under `--data-dir` (default: `~/.local/share/obsidian-web` on Linux, `~/Library/Application Support/obsidian-web` on macOS). The service user needs write access to the executable's directory.
 

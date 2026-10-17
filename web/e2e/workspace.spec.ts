@@ -339,8 +339,8 @@ test("about dialog shows an available update and saves the check schedule", asyn
   const mobile = info.project.name.startsWith("mobile");
   await workspace(page, mobile);
   if (mobile) await page.getByRole("button", { name: "Open files", exact: true }).click();
-  await page.getByRole("button", { name: /About and updates, version 0\.9\.0 available/ }).click();
-  const dialog = page.getByRole("dialog", { name: "About and updates" });
+  await page.getByRole("button", { name: /Settings, version 0\.9\.0 available/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Settings" });
   await expect(dialog).toContainText("v0.9.0 available");
   await expect(dialog).toContainText("Faster search.");
   await expect(dialog.getByRole("button", { name: "Update to v0.9.0" })).toBeVisible();

@@ -8,6 +8,7 @@ import { getOutline } from "./markdown";
 import { capturePreview, startPosition, type ScrollHandle, type ScrollPosition } from "./scrollPosition";
 import MarkdownPreview from "./MarkdownPreview";
 import VaultHome from "./VaultHome";
+import { applyTheme, storedTheme, themes, type ThemeName } from "./theme";
 import SplitDivider, { splitStyle } from "./SplitDivider";
 
 const MarkdownEditor = lazy(() => import("./MarkdownEditor"));
@@ -71,6 +72,8 @@ export default function App() {
   const [folderMenu, setFolderMenu] = useState<string | null>(null);
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [theme, setTheme] = useState<ThemeName>(storedTheme);
+  const changeTheme = (name: ThemeName) => { setTheme(name); applyTheme(name, true); };
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const workspaceRestored = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -674,7 +677,7 @@ export default function App() {
 
     <aside className={`sidebar ${drawer ? "open" : ""}`} aria-label="Library navigation" inert={(compact && !drawer) || mobilePanel === "context" || focusMode}>
       <div className="brand"><BrandMark /><span>Obsidian<span>WEB GATEWAY</span></span><span className="brand-edition">/ 01</span></div>
-      <div className="vault-header"><div className="vault-mark"><Icon name="book" /></div><div><strong>{system.vault.name}</strong><span>{noteCount} {noteCount === 1 ? "note" : "notes"} · local vault</span></div><button className={`icon-button settings-button ${updateStatus?.available ? "has-update" : ""}`} onClick={() => { setUpdatesOpen(true); setDrawer(false); }} aria-label={updateStatus?.available ? `About and updates, version ${updateStatus.latest?.version} available` : "About and updates"} title={updateStatus?.available ? `Update available: v${updateStatus.latest?.version}` : "About and updates"}><Icon name="settings" /></button><button className="icon-button mobile-only" onClick={() => setDrawer(false)} aria-label="Close files"><Icon name="close" /></button></div>
+      <div className="vault-header"><div className="vault-mark"><Icon name="book" /></div><div><strong>{system.vault.name}</strong><span>{noteCount} {noteCount === 1 ? "note" : "notes"} · local vault</span></div><button className={`icon-button settings-button ${updateStatus?.available ? "has-update" : ""}`} onClick={() => { setUpdatesOpen(true); setDrawer(false); }} aria-label={updateStatus?.available ? `Settings, version ${updateStatus.latest?.version} available` : "Settings"} title={updateStatus?.available ? `Settings · update available: v${updateStatus.latest?.version}` : "Settings"}><Icon name="settings" /></button><button className="icon-button mobile-only" onClick={() => setDrawer(false)} aria-label="Close files"><Icon name="close" /></button></div>
       <button className={`sidebar-home ${!document ? "active" : ""}`} onClick={goHome} aria-label="Library home" aria-current={!document ? "page" : undefined}><Icon name="home" /><span>Library</span><span className="home-count">{String(noteCount).padStart(2, "0")}</span></button>
       <form className="search-box" onSubmit={event => { event.preventDefault(); void runSearch(search); }}>
         <Icon name="search" /><input ref={searchRef} value={search} onChange={event => changeSearch(event.target.value)} placeholder="Search notes" aria-label="Search vault" />
@@ -682,8 +685,7 @@ export default function App() {
       </form>
       <div className={`sidebar-section-label root-drop-target ${draggedPath && dropTarget === "" ? "drop-active" : ""}`} onDragOver={event => { if (!draggedPath) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); }} onDrop={event => { event.preventDefault(); const path = draggedPath ?? event.dataTransfer.getData("text/plain"); if (path) void moveFile(path, ""); }}><span>{searchState !== "idle" ? "Search results" : draggedPath ? "Move to Vault root" : "Your files"}</span>{searchState !== "idle" && !draggedPath && <button onClick={resetSearch}><Icon name="arrow-left" /> All files</button>}</div>
       {draggedPath && <div className="drag-help" role="status">Drop on a folder, or above to move to the root</div>}
-      <div className="sidebar-scroll">{searchState === "loading" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>Searching your vault…</strong></div> : searchState === "error" ? <div className="search-feedback" role="status"><Icon name="info" /><strong>Search failed</strong><button onClick={() => void runSearch(search)}>Try again</button></div> : searchState === "done" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>No notes found</strong><p>Try another word or a shorter phrase.</p><button onClick={resetSearch}>Clear search</button></div> : results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} folderMenu={folderMenu} onFolderMenu={setFolderMenu} onFolderAction={(kind, path) => openMutation(kind, { path, type: "directory" })} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}</div>
-      <div className="sidebar-colophon"><span className="colophon-symbol">✳</span><p>A quiet place for<br /><em>your next idea.</em></p><span>YOUR NOTES. YOUR SPACE.</span></div>
+      <div className="sidebar-scroll">{searchState === "loading" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>Searching your vault…</strong></div> : searchState === "error" ? <div className="search-feedback" role="status"><Icon name="info" /><strong>Search failed</strong><button onClick={() => void runSearch(search)}>Try again</button></div> : searchState === "done" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>No notes found</strong><p>Try another word or a shorter phrase.</p><button onClick={resetSearch}>Clear search</button></div> : results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} folderMenu={folderMenu} onFolderMenu={setFolderMenu} onFolderAction={(kind, path) => openMutation(kind, { path, type: "directory" })} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}{searchState === "idle" && <div className="sidebar-colophon"><span className="colophon-symbol">✳</span><p>A quiet place for<br /><em>your next idea.</em></p><span>YOUR NOTES. YOUR SPACE.</span></div>}</div>
       {!system.features.readOnly && <div className="file-actions"><button onClick={() => openMutation("file")}><Icon name="file-plus" /> New note</button><button className="icon-button" onClick={() => openMutation("directory")} aria-label="New folder"><Icon name="folder-plus" /></button></div>}
     </aside>
     {contextVisible && <button className="context-scrim" onClick={() => setRightOpen(false)} aria-label="Close context panel" />}
@@ -736,7 +738,7 @@ export default function App() {
     {confirmation && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="confirmation-title">{confirmation.title}</h2><p>{confirmation.body}</p><div className="modal-actions"><button onClick={() => setConfirmation(null)}>Cancel</button><button className="danger-button" onClick={() => { confirmation.action(); setConfirmation(null); }}>Continue</button></div></div></div>}
     {pendingPath && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="unsaved-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="unsaved-title">Save your changes?</h2><p>You have an unsaved draft. Choose what to do before opening another note.</p><div className="modal-actions"><button onClick={() => setPendingPath(null)}>Keep editing</button><button onClick={() => { const path = pendingPath; setPendingPath(null); void loadFile(path); }}>Discard</button><button className="primary-button" onClick={async () => { if (await save()) { const path = pendingPath; setPendingPath(null); void loadFile(path); } }}>Save & open</button></div></div></div>}
     {closingTab && <div className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="close-tab-title"><div className="modal-icon warning"><Icon name="info" /></div><h2 id="close-tab-title">Close with unsaved changes?</h2><p>Save your changes to {closingTab.document ? fileTitle(closingTab.document.path) : "this note"} before closing its tab.</p><div className="modal-actions"><button onClick={() => setPendingCloseTab(null)}>Keep tab</button><button onClick={() => closeTabImmediately(closingTab.id)}>Discard & close</button><button className="primary-button" onClick={async () => { if (await save()) closeTabImmediately(closingTab.id); }}>Save & close</button></div></div></div>}
-    {updatesOpen && <UpdatesDialog status={updateStatus} version={system.version} hasDrafts={tabs.some(tab => tab.document?.dirty)} onStatus={setUpdateStatus} onClose={() => setUpdatesOpen(false)} />}
+    {updatesOpen && <UpdatesDialog status={updateStatus} version={system.version} hasDrafts={tabs.some(tab => tab.document?.dirty)} theme={theme} onTheme={changeTheme} onStatus={setUpdateStatus} onClose={() => setUpdatesOpen(false)} />}
     {mutationDialog && <MutationModal busy={mutating} error={error} dialog={mutationDialog} onChange={value => setMutationDialog(current => current ? { ...current, value } : null)} onClose={() => setMutationDialog(null)} onSubmit={submitMutation} />}
   </div>;
 }
@@ -844,7 +846,7 @@ function Login({ vault, methods, onSuccess, error }: { vault: string; methods: N
   </form><div className="login-form-footer">A small gateway to a world of ideas.</div></div></main>;
 }
 
-function UpdatesDialog({ status, version, hasDrafts, onStatus, onClose }: { status: UpdateStatus | null; version: string; hasDrafts: boolean; onStatus: (status: UpdateStatus) => void; onClose: () => void }) {
+function UpdatesDialog({ status, version, hasDrafts, theme, onTheme, onStatus, onClose }: { status: UpdateStatus | null; version: string; hasDrafts: boolean; theme: ThemeName; onTheme: (theme: ThemeName) => void; onStatus: (status: UpdateStatus) => void; onClose: () => void }) {
   const [draft, setDraft] = useState<UpdateSettings | null>(status?.settings ?? null);
   const [busy, setBusy] = useState<"" | "check" | "save" | "install">("");
   const [message, setMessage] = useState("");
@@ -884,7 +886,19 @@ function UpdatesDialog({ status, version, hasDrafts, onStatus, onClose }: { stat
   return <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !restarting) onClose(); }}>
     <div className="modal updates-modal" role="dialog" aria-modal="true" aria-labelledby="updates-title">
       <div className="modal-icon"><Icon name="settings" /></div>
-      <h2 id="updates-title">About and updates</h2>
+      <h2 id="updates-title">Settings</h2>
+      <fieldset className="settings-section theme-settings">
+        <legend>Appearance</legend>
+        <div className="theme-options" role="radiogroup" aria-label="Color theme">
+          {themes.map(option => <label className="theme-option" key={option.name} style={{ "--swatch-sidebar": option.sidebar, "--swatch-highlight": option.highlight, "--swatch-paper": option.paper, "--swatch-accent": option.accent, "--swatch-ink": option.ink } as React.CSSProperties}>
+            <input type="radio" name="color-theme" value={option.name} checked={theme === option.name} onChange={() => onTheme(option.name)} />
+            <span className="theme-swatch" aria-hidden="true"><span /><span><i /><i /><i /></span></span>
+            <strong>{option.label}</strong>
+          </label>)}
+        </div>
+        <p className="update-meta">Applies to this browser, in both light and dark mode.</p>
+      </fieldset>
+      <h3 className="settings-heading">About and updates</h3>
       <div className="update-summary">
         <span>Version <strong>v{status?.current ?? version}</strong></span>
         {latest ? <span className="update-badge">v{latest.version} available{latest.prerelease ? " · prerelease" : ""}</span> : status?.checkedAt && !status.error ? <span className="update-current"><Icon name="check" /> Up to date</span> : null}

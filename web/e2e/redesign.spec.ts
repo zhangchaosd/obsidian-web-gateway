@@ -354,7 +354,7 @@ test("mobile navigation excludes hidden controls and quick search replaces conte
   await expect(page.locator(".sidebar")).toHaveJSProperty("inert", false);
   await expect(page.getByLabel("Search vault")).toBeFocused();
   const close = page.locator(".sidebar").getByRole("button", { name: "Close files", exact: true });
-  const first = page.locator(".sidebar").getByRole("button", { name: /About and updates/ });
+  const first = page.locator(".sidebar").getByRole("button", { name: /^Settings/ });
   const last = page.getByRole("button", { name: "New folder", exact: true });
   await first.focus();
   await page.keyboard.press("Shift+Tab");
@@ -400,13 +400,43 @@ test("preview content is not rebuilt when unrelated workspace state changes", as
   expect(await heading.evaluate(element => (element as HTMLElement & { marker?: boolean }).marker === true)).toBe(true);
 });
 
-test("the file tree keeps its room on shorter desktop screens", async ({ page }, info) => {
+test("the colophon follows the file list instead of taking room from it", async ({ page }, info) => {
   test.skip(!info.project.name.startsWith("desktop"), "Desktop sidebar layout");
   await page.setViewportSize({ width: 1280, height: 720 });
   await mockVault(page);
+  const notes = Array.from({ length: 40 }, (_, index) => ({ name: `Note ${String(index + 1).padStart(2, "0")}.md`, path: `Note ${String(index + 1).padStart(2, "0")}.md`, type: "markdown" }));
+  await page.route("**/api/v1/tree", route => route.fulfill({ json: { entries: notes } }));
   await page.goto("/");
-  await expect(page.locator(".sidebar-colophon")).toBeHidden();
-  expect(await page.locator(".sidebar-scroll").evaluate(element => element.clientHeight)).toBeGreaterThan(250);
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await expect(page.locator(".sidebar-colophon")).toBeVisible();
+  const list = page.locator(".sidebar-scroll");
+  await expect(list.locator(".sidebar-colophon")).toHaveCount(1);
+  expect(await list.evaluate(element => element.clientHeight)).toBeGreaterThan(300);
+  // With a long list the colophon waits below the last file.
+  await expect(list.getByRole("button", { name: "Open Note 01.md", exact: true })).toBeInViewport();
+  await expect(list.locator(".sidebar-colophon")).not.toBeInViewport();
+  await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(list.locator(".sidebar-colophon")).toBeInViewport();
+});
+
+test("color themes apply everywhere and are remembered", async ({ page }, info) => {
+  test.skip(!info.project.name.startsWith("desktop"), "Theme selection is platform independent");
+  await mockVault(page);
+  await page.goto("/");
+  const sidebarColor = () => page.locator(".sidebar").evaluate(element => getComputedStyle(element).backgroundColor);
+  const forest = await sidebarColor();
+  await page.locator(".sidebar").getByRole("button", { name: /^Settings/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  await expect(dialog.getByRole("radio", { name: "Forest" })).toBeChecked();
+  await dialog.getByText("Ink", { exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "ink");
+  expect(await sidebarColor()).not.toBe(forest);
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", "#1b2233");
+
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "ink");
+  await page.locator(".sidebar").getByRole("button", { name: /^Settings/ }).click();
+  await page.getByRole("dialog", { name: "Settings" }).getByText("Plum", { exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "plum");
+  await page.getByRole("dialog", { name: "Settings" }).getByText("Forest", { exact: true }).click();
+  await expect(page.locator("html")).not.toHaveAttribute("data-theme", /.+/);
+  expect(await sidebarColor()).toBe(forest);
 });

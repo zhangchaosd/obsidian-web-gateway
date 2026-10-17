@@ -5,6 +5,7 @@
   --home-card: #e9eddf; --home-card-hover: #e3e8d6; --home-card-line: #d6d9c9; --home-card-line-hover: #a7b497;
   --home-card-text: #354334; --home-card-muted: #596b55; --home-card-detail: #718367; --home-card-rule: #c5cbb780;
   --home-card-arrow-line: #bdc6ad; --home-card-arrow-hover: #d3ddc6;
+  --home-cta: #264b41; --home-cta-hover: #183c33;
   flex: 1; min-height: 0; overflow: auto; background: var(--surface); scrollbar-gutter: stable;
 }
 .home-inner { width: min(100%, 1280px); margin: 0 auto; padding: 30px clamp(24px, 4.8vw, 78px) 22px; }
@@ -20,8 +21,8 @@
 .home-intro { margin: 24px 0 0; color: var(--muted); font-size: 12px; line-height: 1.85; }
 .home-hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 24px; margin-top: 28px; }
 .home-hero-actions button { display: inline-flex; align-items: center; gap: 12px; border: 0; font-size: 11px; font-weight: 500; transition: background .2s, transform .2s, color .2s; }
-.home-create { min-height: 43px; padding: 0 17px; border-radius: 3px; background: #264b41; color: #fffaf0; }
-.home-create:hover { background: #183c33; transform: translateY(-2px); }
+.home-create { min-height: 43px; padding: 0 17px; border-radius: 3px; background: var(--home-cta); color: #fffaf0; }
+.home-create:hover { background: var(--home-cta-hover); transform: translateY(-2px); }
 .home-plus { font-size: 19px; font-weight: 300; line-height: 1; }
 .home-hero-actions svg { width: 16px; height: 16px; }
 .home-create > svg { margin-left: 7px; }
@@ -69,7 +70,7 @@
 .home-shelves-single { grid-template-columns: minmax(0, 1fr); }
 .home-shelves-single .home-featured-note { min-height: 185px; }
 .home-empty-shelf { display: flex; align-items: center; gap: 24px; padding: 35px 0 28px; }
-.home-empty-symbol { color: #77846e; font-size: 49px; font-family: var(--serif); }
+.home-empty-symbol { color: var(--home-sage); font-size: 49px; font-family: var(--serif); }
 .home-empty-shelf > div { flex: 1; }
 .home-empty-shelf h3 { margin: 0 0 8px; font: 400 23px/1.25 var(--serif); letter-spacing: -.025em; }
 .home-empty-shelf p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }

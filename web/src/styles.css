@@ -9,6 +9,9 @@
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --shadow: 0 24px 80px #14241f24;
   --sidebar: #202e2b; --sidebar-text: #eaece0; --sidebar-muted: #a6b0a4; --sidebar-line: #ffffff12; --gold: #ccad7e;
+  /* Sidebar surfaces and its highlight color; themes override these together. */
+  --sidebar-strong: #bdc5b9; --sidebar-border: #45514a; --sidebar-panel: #2c3932; --sidebar-panel-strong: #314038; --sidebar-surface: #25332c;
+  --gold-ink: #e9d0a5; --gold-hover: #e3c89f; --on-gold: #203028; --scrim: #15251f;
   background: var(--panel); color: var(--text);
 }
 * { box-sizing: border-box; }
@@ -109,6 +112,9 @@ kbd { flex: none; border: 1px solid var(--line); border-radius: 4px; background:
 .release-notes pre { max-height: 180px; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; word-break: break-word; color: var(--muted-strong); font: 12px/1.6 var(--mono); }
 .modal-actions.update-actions { justify-content: flex-start; margin-top: 18px; }
 .update-settings { margin: 22px 0 0; border: 0; border-top: 1px solid var(--line-soft); padding: 18px 0 0; }
+.settings-section { margin: 4px 0 0; border: 0; padding: 0; }
+.settings-section legend, .settings-heading { padding: 0; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+.settings-heading { margin: 26px 0 12px; padding-top: 20px; border-top: 1px solid var(--line-soft); }
 .update-settings legend { padding: 0; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
 .update-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-top: 12px; }
 .update-fields .field-label + .field-label { margin-top: 0; }
@@ -404,7 +410,7 @@ button, a, input { transition: background-color .18s ease, border-color .18s eas
 .brand > span:not(.brand-edition) { display: flex; flex-direction: column; gap: 6px; font: 500 22px/.95 var(--serif); letter-spacing: -.04em; }
 .brand > span > span { color: var(--sidebar-muted); font: 8px/1.2 var(--mono); letter-spacing: .17em; }
 .brand .brand-edition { margin-left: auto; color: var(--sidebar-muted); font: 9px var(--mono); }
-.sidebar { --muted: var(--sidebar-muted); --muted-strong: #bdc5b9; --text: var(--sidebar-text); --line: #45514a; --panel: #2c3932; --panel-strong: #314038; --surface: #25332c; --raised: #2c3932; --accent: #d3b382; --accent-ink: #ead2a9; --accent-soft: #ffffff0d; --danger: #efa49a; }
+.sidebar { --muted: var(--sidebar-muted); --muted-strong: var(--sidebar-strong); --text: var(--sidebar-text); --line: var(--sidebar-border); --panel: var(--sidebar-panel); --panel-strong: var(--sidebar-panel-strong); --surface: var(--sidebar-surface); --raised: var(--sidebar-panel); --accent: var(--gold); --accent-ink: var(--gold-ink); --accent-soft: #ffffff0d; --danger: #efa49a; }
 .sidebar .vault-header { margin: 0 18px 15px; height: 67px; padding: 0; gap: 9px; border-block: 1px solid var(--sidebar-line); }
 .vault-header strong { font-size: 12px; font-weight: 500; }
 .vault-header span { font-size: 10px; }
@@ -424,17 +430,21 @@ button, a, input { transition: background-color .18s ease, border-color .18s eas
 .tree { gap: 3px; }
 .tree summary, .tree > button, .tree > a { min-height: 35px; border-radius: 4px; font-size: 12px; }
 .tree summary { font-weight: 400; }
-.tree > button.active { background: #d3b38216; color: #e9d0a5; font-weight: 500; box-shadow: inset 2px 0 var(--gold); }
-.tree > button.active .icon { color: #e9d0a5; }
-.sidebar .folder-menu { border-color: #45514a; }
-.sidebar-colophon { padding: 30px 26px 26px; flex: none; }
+.tree > button.active { background: color-mix(in srgb, var(--gold) 9%, transparent); color: var(--gold-ink); font-weight: 500; box-shadow: inset 2px 0 var(--gold); }
+.tree > button.active .icon { color: var(--gold-ink); }
+.sidebar .folder-menu { border-color: var(--sidebar-border); }
+/* The colophon follows the file list: it rests at the bottom when there are few
+   files and scrolls away with long lists instead of taking space from them. */
+.sidebar-scroll { display: flex; flex-direction: column; }
+.sidebar-scroll > * { flex-shrink: 0; }
+.sidebar-colophon { margin-top: auto; padding: 32px 16px 6px; }
 .colophon-symbol { color: var(--gold); font: 28px var(--serif); }
-.sidebar-colophon p { margin: 11px 0 17px; color: #c8cec0; font: 20px/1.35 var(--serif); letter-spacing: -.025em; }
+.sidebar-colophon p { margin: 10px 0 14px; color: color-mix(in srgb, var(--sidebar-text) 82%, var(--sidebar-muted)); font: 20px/1.35 var(--serif); letter-spacing: -.025em; }
 .sidebar-colophon p em { color: var(--gold); font-weight: 400; }
 .sidebar-colophon > span:last-child { color: var(--sidebar-muted); font: 8px var(--mono); letter-spacing: .1em; }
 .sidebar .file-actions { padding: 17px 18px 22px; border-top-color: var(--sidebar-line); gap: 8px; }
-.sidebar .file-actions > button:first-child { height: 40px; background: #cfb286; color: #203028; border: 1px solid #cfb286; border-radius: 4px; font-size: 12px; font-weight: 600; }
-.sidebar .file-actions > button:first-child:hover { background: #e3c89f; }
+.sidebar .file-actions > button:first-child { height: 40px; background: var(--gold); color: var(--on-gold); border: 1px solid var(--gold); border-radius: 4px; font-size: 12px; font-weight: 600; }
+.sidebar .file-actions > button:first-child:hover { background: var(--gold-hover); border-color: var(--gold-hover); }
 .sidebar .file-actions > .icon-button { height: 40px; width: 38px; border: 1px solid #ffffff1a; border-radius: 4px; }
 .document-location > span { font: 9px var(--mono); letter-spacing: .12em; }
 .document-location strong { font-size: 12px; }
@@ -492,8 +502,8 @@ button, a, input { transition: background-color .18s ease, border-color .18s eas
 .focus-mode .document-panes:not(.is-split) .preview { padding-inline: max(32px, calc((100vw - 760px) / 2)); }
 .focus-mode .document-panes:not(.is-split) .cm-scroller { padding-inline: max(32px, calc((100vw - 860px) / 2)); }
 .focus-mode .tab-strip { display: none; }
-.modal-backdrop { background: #15251f77; backdrop-filter: blur(6px); }
-.modal { border-radius: 6px; box-shadow: 0 24px 100px #15251f40; }
+.modal-backdrop { background: color-mix(in srgb, var(--scrim) 47%, transparent); backdrop-filter: blur(6px); }
+.modal { border-radius: 6px; box-shadow: 0 24px 100px color-mix(in srgb, var(--scrim) 25%, transparent); }
 .modal-icon { border-radius: 4px; }
 .modal h2 { font-size: 30px; font-weight: 400; }
 .field-label input, .field-label select { border-radius: 4px; }
@@ -522,7 +532,6 @@ button, a, input { transition: background-color .18s ease, border-color .18s eas
 .login-button { min-height: 48px; border-radius: 4px; }
 .login-form-footer { flex: none; margin-top: 60px; color: var(--muted); font: italic 14px var(--serif); }
 /* The colophon is decorative; on shorter screens the file tree needs the room. */
-@media (max-height: 860px) { .sidebar-colophon { display: none; } }
 @media (max-width: 1200px) { .top-actions { gap: 5px; } .sync-state { font-size: 0; margin-right: 3px; } .document-toolbar { padding-inline: 20px; gap: 10px; } .toolbar-actions { gap: 8px; } }
 @media (max-width: 1050px) { .context-panel { background: var(--surface); } .context-section-label { font-size: 10px; } .login-story { padding-inline: 30px; } .workspace-footer { padding-inline: 20px; } .workspace-footer > span:last-child { font-size: 7px; } }
 @media (max-width: 760px) {

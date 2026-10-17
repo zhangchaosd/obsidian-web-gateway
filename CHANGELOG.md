@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 — 2026-10-17
+
+- Two new color themes, Ink (navy with pale blue highlights) and Plum (aubergine with rose highlights), alongside the default Forest. Each has light and dark variants covering the workspace, Library home, and login page. Choose one under **Settings → Appearance**; the choice is remembered per browser.
+- The gear menu is now **Settings**, with Appearance above About and updates.
+- The sidebar colophon now follows the file list instead of being pinned below it, so the list uses the full sidebar height and the colophon appears only after the last file.
+
 ## 0.6.0 — 2026-10-02
 
 - Redesigned the workspace as a private editorial library: a Library home with shortcuts to real notes, warm reading surfaces, a new brand mark and favicon, and refreshed light and dark themes.
