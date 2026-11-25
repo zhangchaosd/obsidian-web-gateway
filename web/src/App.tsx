@@ -462,6 +462,40 @@ export default function App() {
     }
   };
 
+  // Native drag and drop does not reliably scroll containers, so with a long file
+  // list the target folder could be out of reach. While a file is dragged near the
+  // list's top or bottom edge, scroll it every frame, faster closer to the edge.
+  // dragover only records the pointer: browsers send it as rarely as every 350ms
+  // while the pointer rests, which alone would scroll in visible jumps.
+  const dragScroll = useRef<{ list: HTMLElement; y: number; at: number; frame: number } | null>(null);
+  const scrollDuringDrag = () => {
+    const state = dragScroll.current;
+    if (!state) return;
+    state.frame = 0;
+    // No dragover for a while: the pointer left the list or the drag ended.
+    if (performance.now() - state.at > 600) return;
+    const { top, bottom } = state.list.getBoundingClientRect();
+    const zone = Math.min(64, state.list.clientHeight / 4);
+    const speed = (distance: number) => Math.ceil((1 - Math.min(zone, Math.max(0, distance)) / zone) * 14);
+    const delta = state.y < top + zone ? -speed(state.y - top) : state.y > bottom - zone ? speed(bottom - state.y) : 0;
+    if (!delta) return;
+    state.list.scrollTop += delta;
+    state.frame = requestAnimationFrame(scrollDuringDrag);
+  };
+  const autoScrollDuringDrag = (event: React.DragEvent<HTMLElement>) => {
+    if (!draggedPath) return;
+    const state = dragScroll.current ??= { list: event.currentTarget, y: 0, at: 0, frame: 0 };
+    state.list = event.currentTarget;
+    state.y = event.clientY;
+    state.at = performance.now();
+    if (!state.frame) state.frame = requestAnimationFrame(scrollDuringDrag);
+  };
+  useEffect(() => {
+    if (draggedPath || !dragScroll.current) return;
+    cancelAnimationFrame(dragScroll.current.frame);
+    dragScroll.current = null;
+  }, [draggedPath]);
+
   const beginDrag = (path: string, event: React.DragEvent<HTMLElement>) => {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", path);
@@ -685,7 +719,7 @@ export default function App() {
       </form>
       <div className={`sidebar-section-label root-drop-target ${draggedPath && dropTarget === "" ? "drop-active" : ""}`} onDragOver={event => { if (!draggedPath) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); }} onDrop={event => { event.preventDefault(); const path = draggedPath ?? event.dataTransfer.getData("text/plain"); if (path) void moveFile(path, ""); }}><span>{searchState !== "idle" ? "Search results" : draggedPath ? "Move to Vault root" : "Your files"}</span>{searchState !== "idle" && !draggedPath && <button onClick={resetSearch}><Icon name="arrow-left" /> All files</button>}</div>
       {draggedPath && <div className="drag-help" role="status">Drop on a folder, or above to move to the root</div>}
-      <div className="sidebar-scroll">{searchState === "loading" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>Searching your vault…</strong></div> : searchState === "error" ? <div className="search-feedback" role="status"><Icon name="info" /><strong>Search failed</strong><button onClick={() => void runSearch(search)}>Try again</button></div> : searchState === "done" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>No notes found</strong><p>Try another word or a shorter phrase.</p><button onClick={resetSearch}>Clear search</button></div> : results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} folderMenu={folderMenu} onFolderMenu={setFolderMenu} onFolderAction={(kind, path) => openMutation(kind, { path, type: "directory" })} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}{searchState === "idle" && <div className="sidebar-colophon"><span className="colophon-symbol">✳</span><p>A quiet place for<br /><em>your next idea.</em></p><span>YOUR NOTES. YOUR SPACE.</span></div>}</div>
+      <div className="sidebar-scroll" onDragOverCapture={autoScrollDuringDrag}>{searchState === "loading" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>Searching your vault…</strong></div> : searchState === "error" ? <div className="search-feedback" role="status"><Icon name="info" /><strong>Search failed</strong><button onClick={() => void runSearch(search)}>Try again</button></div> : searchState === "done" && !results.length ? <div className="search-feedback" role="status"><Icon name="search" /><strong>No notes found</strong><p>Try another word or a shorter phrase.</p><button onClick={resetSearch}>Clear search</button></div> : results.length > 0 ? <div className="search-results">{results.map(result => <button key={result.path} draggable={!system.features.readOnly} onDragStart={event => beginDrag(result.path, event)} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onClick={() => requestOpen(result.path)}><span className="result-icon"><Icon name="document" /></span><span><strong>{fileTitle(result.path)}</strong><small>{result.path}</small><em>{result.matches[0]?.snippet}</em></span></button>)}</div> : <Tree entries={tree} activePath={document?.path} draggedPath={draggedPath} dropTarget={dropTarget} readOnly={system.features.readOnly} folderMenu={folderMenu} onFolderMenu={setFolderMenu} onFolderAction={(kind, path) => openMutation(kind, { path, type: "directory" })} onDragStart={beginDrag} onDragEnd={() => { setDraggedPath(null); setDropTarget(null); }} onDropTarget={setDropTarget} onMove={moveFile} onOpen={requestOpen} />}{searchState === "idle" && <div className="sidebar-colophon"><span className="colophon-symbol">✳</span><p>A quiet place for<br /><em>your next idea.</em></p><span>YOUR NOTES. YOUR SPACE.</span></div>}</div>
       {!system.features.readOnly && <div className="file-actions"><button onClick={() => openMutation("file")}><Icon name="file-plus" /> New note</button><button className="icon-button" onClick={() => openMutation("directory")} aria-label="New folder"><Icon name="folder-plus" /></button></div>}
     </aside>
     {contextVisible && <button className="context-scrim" onClick={() => setRightOpen(false)} aria-label="Close context panel" />}

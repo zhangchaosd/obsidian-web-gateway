@@ -440,3 +440,37 @@ test("color themes apply everywhere and are remembered", async ({ page }, info) 
   await expect(page.locator("html")).not.toHaveAttribute("data-theme", /.+/);
   expect(await sidebarColor()).toBe(forest);
 });
+
+test("dragging a note to the list's edge scrolls to folders that were out of view", async ({ page }, info) => {
+  test.skip(!info.project.name.startsWith("desktop"), "HTML drag and drop is a desktop interaction");
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await mockVault(page);
+  const notes = Array.from({ length: 60 }, (_, index) => `Note ${String(index + 1).padStart(2, "0")}.md`);
+  await page.route("**/api/v1/tree", route => route.fulfill({ json: { entries: [
+    { name: "Archive", path: "Archive", type: "directory", children: [] },
+    ...notes.map(name => ({ name, path: name, type: "markdown" }))
+  ] } }));
+  const moves: unknown[] = [];
+  await page.route("**/api/v1/path", async route => { moves.push(route.request().postDataJSON()); await route.fulfill({ json: { path: "moved" } }); });
+  await page.goto("/");
+
+  const list = page.locator(".sidebar-scroll");
+  const folder = list.locator("summary").filter({ hasText: "Archive" });
+  await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(folder).not.toBeInViewport();
+
+  await list.getByRole("button", { name: "Open Note 60.md", exact: true }).hover();
+  await page.mouse.down();
+  const box = (await list.boundingBox())!;
+  // Rest near the top edge. A resting pointer still sends occasional dragover
+  // events; send one every 300ms, about as rarely as a browser does.
+  const deadline = Date.now() + 15_000;
+  for (let step = 0; Date.now() < deadline && await list.evaluate(element => element.scrollTop) > 0; step++) {
+    await page.mouse.move(box.x + 80, box.y + 6 + (step % 2));
+    await page.waitForTimeout(300);
+  }
+  expect(await list.evaluate(element => element.scrollTop)).toBe(0);
+  await folder.hover();
+  await page.mouse.up();
+  await expect.poll(() => moves).toEqual([{ oldPath: "Note 60.md", newPath: "Archive/Note 60.md" }]);
+});

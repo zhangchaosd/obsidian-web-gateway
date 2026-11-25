@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 — 2026-11-25
+
+- Dragging a file near the top or bottom edge of the file list now scrolls the list, so notes can be moved into folders that are out of view in long lists. Scrolling speeds up closer to the edge and stops when the drag ends.
+
 ## 0.7.0 — 2026-10-17
 
 - Two new color themes, Ink (navy with pale blue highlights) and Plum (aubergine with rose highlights), alongside the default Forest. Each has light and dark variants covering the workspace, Library home, and login page. Choose one under **Settings → Appearance**; the choice is remembered per browser.
